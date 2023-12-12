@@ -1,5 +1,7 @@
 #!/bin/bash
 
+bundle
+
 if [ "$RAILS_ENV" == "staging" ]
 then
   bundle exec rake db:prepare
