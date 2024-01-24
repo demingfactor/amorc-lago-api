@@ -15,19 +15,23 @@ module BillableMetrics
       billable_metric.name = params[:name] if params.key?(:name)
       billable_metric.description = params[:description] if params.key?(:description)
 
-      if params.key?(:group)
-        group_result = update_groups(billable_metric, params[:group])
-        return group_result if group_result.error
+      ActiveRecord::Base.transaction do
+        if params.key?(:group)
+          group_result = update_groups(billable_metric, params[:group])
+          return group_result if group_result.error
+        end
+
+        if params.key?(:filters)
+          BillableMetricFilters::CreateOrUpdateBatchService.call(
+            billable_metric:,
+            filters_params: params[:filters].map(&:with_indifferent_access),
+          ).raise_if_error!
+        end
       end
 
       # NOTE: Only name and description are editable if billable metric
       #       is attached to a plan
       unless billable_metric.plans.exists?
-        # Blocking recurring_count_agg in transition period. It will be removed completely in the future.
-        if params.key?(:aggregation_type) && params[:aggregation_type]&.to_sym == :recurring_count_agg
-          return result.not_allowed_failure!(code: 'invalid_aggregation_type')
-        end
-
         billable_metric.code = params[:code] if params.key?(:code)
         billable_metric.aggregation_type = params[:aggregation_type]&.to_sym if params.key?(:aggregation_type)
         billable_metric.weighted_interval = params[:weighted_interval]&.to_sym if params.key?(:weighted_interval)
@@ -49,12 +53,10 @@ module BillableMetrics
     attr_reader :billable_metric, :params
 
     def update_groups(metric, group_params)
-      ActiveRecord::Base.transaction do
-        Groups::CreateOrUpdateBatchService.call(
-          billable_metric: metric,
-          group_params: group_params.with_indifferent_access,
-        )
-      end
+      Groups::CreateOrUpdateBatchService.call(
+        billable_metric: metric,
+        group_params: group_params.with_indifferent_access,
+      )
     end
   end
 end

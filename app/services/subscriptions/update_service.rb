@@ -18,11 +18,18 @@ module Subscriptions
       )
         return result
       end
+      return result.forbidden_failure! if !License.premium? && params.key?(:plan_overrides)
 
       subscription.name = params[:name] if params.key?(:name)
       subscription.ending_at = params[:ending_at] if params.key?(:ending_at)
 
-      subscription.plan = override_plan(subscription.plan) if params.key?(:plan_overrides)
+      if params.key?(:plan_overrides)
+        plan_result = Plans::UpdateService.call(
+          plan: subscription.plan,
+          params: params[:plan_overrides].to_h.with_indifferent_access,
+        )
+        return plan_result unless plan_result.success?
+      end
 
       if subscription.starting_in_the_future? && params.key?(:subscription_at)
         subscription.subscription_at = params[:subscription_at]
@@ -56,10 +63,6 @@ module Subscriptions
 
     def valid?(args)
       Subscriptions::ValidateService.new(result, **args).valid?
-    end
-
-    def override_plan(plan)
-      Plans::OverrideService.call(plan:, params: params[:plan_overrides].to_h.with_indifferent_access).plan
     end
   end
 end

@@ -3,6 +3,12 @@
 module BillableMetrics
   module Aggregations
     class UniqueCountService < BillableMetrics::Aggregations::BaseService
+      def initialize(...)
+        super(...)
+
+        event_store.aggregation_property = billable_metric.field_name
+      end
+
       def aggregate(options: {})
         aggregation = compute_aggregation.ceil(5)
 
@@ -24,7 +30,7 @@ module BillableMetrics
 
         newly_applied_units = (operation_type == :add) ? 1 : 0
 
-        unless previous_event
+        unless cached_aggregation
           handle_event_metadata(
             current_aggregation: newly_applied_units,
             max_aggregation: newly_applied_units,
@@ -34,8 +40,8 @@ module BillableMetrics
           return newly_applied_units
         end
 
-        old_aggregation = BigDecimal(previous_event.metadata['current_aggregation'])
-        old_max = BigDecimal(previous_event.metadata['max_aggregation'])
+        old_aggregation = BigDecimal(cached_aggregation.current_aggregation)
+        old_max = BigDecimal(cached_aggregation.max_aggregation)
 
         current_aggregation = (operation_type == :add) ? (old_aggregation + 1) : (old_aggregation - 1)
 
@@ -67,36 +73,46 @@ module BillableMetrics
 
       protected
 
-      # This method fetches the latest event in current period. If such a event exists we know that metadata
-      # with previous aggregation and previous maximum aggregation are stored there. Fetching these metadata values
+      # This method fetches the latest cached aggregation in current period. If such a record exists we know that
+      # previous aggregation and previous maximum aggregation are stored there. Fetching these values
       # would help us in pay in advance value calculation without iterating through all events in current period
-      def previous_event
-        @previous_event ||= begin
-          query = if billable_metric.recurring?
-            recurring_events_scope(to_datetime:, from_datetime:)
-          else
-            events_scope(from_datetime:, to_datetime:)
-          end
-          query = query
-            .joins(:quantified_event)
-            .where(field_presence_condition)
-            .where("events.metadata->>'current_aggregation' IS NOT NULL")
-            .where("events.metadata->>'max_aggregation' IS NOT NULL")
-            .where('quantified_events.added_at::timestamp(0) >= ?', from_datetime)
-            .where('quantified_events.added_at::timestamp(0) <= ?', to_datetime)
+      def cached_aggregation
+        return @cached_aggregation if @cached_aggregation
 
-          query = query.where.not(id: event.id) if event.present?
-          query = query.reorder(created_at: :desc)
+        query = CachedAggregation
+          .where(organization_id: billable_metric.organization_id)
+          .where(external_subscription_id: subscription.external_id)
+          .where(charge_id: charge.id)
+          .from_datetime(from_datetime)
+          .to_datetime(to_datetime)
+          .order(timestamp: :desc)
 
-          query
-            .where('quantified_events.removed_at::timestamp(0) IS NULL')
-            .or(
-              query
-                .where('quantified_events.removed_at::timestamp(0) >= ?', from_datetime)
-                .where('quantified_events.removed_at::timestamp(0) <= ?', to_datetime),
-            )
-            .first
+        query = query
+          .joins(:charge)
+          .joins([
+            'INNER JOIN quantified_events ON quantified_events.organization_id = cached_aggregations.organization_id',
+            'quantified_events.external_subscription_id = cached_aggregations.external_subscription_id',
+            'quantified_events.billable_metric_id = charges.billable_metric_id',
+          ].join(' AND '))
+          .where(quantified_events: { external_id: event_store.events_values })
+          .where('quantified_events.added_at::timestamp(0) >= ?', from_datetime)
+          .where('quantified_events.added_at::timestamp(0) <= ?', to_datetime)
+          .where('quantified_events.removed_at::timestamp(0) IS NULL')
+          .or(
+            query
+              .where('quantified_events.removed_at::timestamp(0) >= ?', from_datetime)
+              .where('quantified_events.removed_at::timestamp(0) <= ?', to_datetime),
+          )
+
+        # TODO: event_id for clickhouse events
+        query = query.where.not(event_id: event.id) if event.present?
+
+        if group
+          query = query.where(group_id: group.id)
+            .where('quantified_events.group_id = cached_aggregations.group_id')
         end
+
+        @cached_aggregation = query.first
       end
 
       def operation_type
@@ -144,18 +160,23 @@ module BillableMetrics
 
       def base_scope
         quantified_events = QuantifiedEvent
-          .joins(customer: :organization)
+          .where(organization_id: billable_metric.organization_id)
           .where(billable_metric_id: billable_metric.id)
-          .where(customer_id: subscription.customer_id)
+          .where(external_subscription_id: subscription.external_id)
 
-        quantified_events = if billable_metric.recurring?
-          quantified_events.where(external_subscription_id: subscription.external_id)
-        else
-          quantified_event_ids = Event.where(subscription_id: subscription.id)
-            .where('quantified_event_id IS NOT NULL')
-            .pluck('DISTINCT(quantified_event_id)')
+        unless billable_metric.recurring?
+          store = event_store_class.new(
+            code: billable_metric.code,
+            subscription:,
+            boundaries: {
+              from_datetime: subscription.started_at,
+              to_datetime: subscription.terminated_at,
+            },
+            filters:,
+          )
+          store.aggregation_property = billable_metric.field_name
 
-          quantified_events.where(id: quantified_event_ids)
+          quantified_events = quantified_events.where(external_id: store.events_values)
         end
 
         return quantified_events unless group

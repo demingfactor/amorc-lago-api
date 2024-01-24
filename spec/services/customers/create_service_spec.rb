@@ -219,10 +219,12 @@ RSpec.describe Customers::CreateService, type: :service do
       end
 
       context 'with provider customer' do
-        let(:payment_provider) { create(:stripe_provider) }
+        let(:payment_provider) { create(:stripe_provider, organization:) }
         let(:stripe_customer) { create(:stripe_customer, customer:, payment_provider:) }
+        let(:result) { BaseService::Result.new }
 
         before do
+          allow(Stripe::Customer).to receive(:update).and_return(result)
           stripe_customer
           customer.update!(payment_provider: 'stripe')
         end
@@ -427,34 +429,54 @@ RSpec.describe Customers::CreateService, type: :service do
           name: 'Foo Bar',
           billing_configuration: {
             payment_provider: 'stripe',
+            payment_provider_code: 'stripe_1',
             provider_customer_id: 'stripe_id',
           },
         }
       end
 
-      it 'creates a stripe customer' do
-        result = customers_service.create_from_api(
-          organization:,
-          params: create_args,
-        )
+      context 'when payment provider does not exist' do
+        let(:error_messages) { { base: ['payment_provider_not_found'] } }
 
-        expect(result).to be_success
+        it 'fails to create customer' do
+          result = customers_service.create_from_api(
+            organization:,
+            params: create_args,
+          )
 
-        aggregate_failures do
-          customer = result.customer
-          expect(customer.id).to be_present
-          expect(customer.payment_provider).to eq('stripe')
+          expect(result.error).to be_a(BaseService::ValidationFailure)
+          expect(result.error.messages).to eq(error_messages)
+        end
+      end
 
-          expect(customer.stripe_customer).to be_present
+      context 'when payment provider exists' do
+        before { create(:stripe_provider, organization:, code: 'stripe_1') }
 
-          stripe_customer = customer.stripe_customer
-          expect(stripe_customer.id).to be_present
-          expect(stripe_customer.provider_customer_id).to eq('stripe_id')
+        it 'creates a stripe customer' do
+          result = customers_service.create_from_api(
+            organization:,
+            params: create_args,
+          )
+
+          expect(result).to be_success
+
+          aggregate_failures do
+            customer = result.customer
+            expect(customer.id).to be_present
+            expect(customer.payment_provider).to eq('stripe')
+
+            expect(customer.stripe_customer).to be_present
+
+            stripe_customer = customer.stripe_customer
+            expect(stripe_customer.id).to be_present
+            expect(stripe_customer.provider_customer_id).to eq('stripe_id')
+          end
         end
       end
 
       context 'when customer already exists' do
         let(:payment_provider) { 'stripe' }
+        let(:payment_provider_code) { 'stripe_1' }
         let(:create_args) do
           {
             external_id: SecureRandom.uuid,
@@ -462,6 +484,7 @@ RSpec.describe Customers::CreateService, type: :service do
             billing_configuration: {
               vat_rate: 28,
               payment_provider:,
+              payment_provider_code:,
               provider_customer_id: 'stripe_id',
             },
           }
@@ -472,6 +495,8 @@ RSpec.describe Customers::CreateService, type: :service do
             organization:,
             external_id: create_args[:external_id],
             email: 'foo@bar.com',
+            payment_provider_code: nil,
+            payment_provider: nil,
           )
         end
 
@@ -519,6 +544,36 @@ RSpec.describe Customers::CreateService, type: :service do
             end
           end
         end
+
+        context 'when payment_provider is not sent' do
+          let(:create_args) do
+            {
+              external_id: SecureRandom.uuid,
+              name: 'Foo Bar',
+              billing_configuration: {
+                vat_rate: 28,
+                sync_with_provider: true,
+              },
+            }
+          end
+
+          it 'updates the customer and reset payment_provider attribute' do
+            result = customers_service.create_from_api(
+              organization:,
+              params: create_args,
+            )
+
+            aggregate_failures do
+              expect(result).to be_success
+              expect(result.customer).to eq(customer)
+
+              # NOTE: It should not erase existing properties
+              expect(result.customer.vat_rate).to eq(28)
+              expect(result.customer.payment_provider).to eq(nil)
+              expect(result.customer.stripe_customer).not_to be_present
+            end
+          end
+        end
       end
     end
 
@@ -534,24 +589,42 @@ RSpec.describe Customers::CreateService, type: :service do
         }
       end
 
-      it 'creates a gocardless customer' do
-        result = customers_service.create_from_api(
-          organization:,
-          params: create_args,
-        )
+      context 'when payment provider does not exist' do
+        let(:error_messages) { { base: ['payment_provider_not_found'] } }
 
-        expect(result).to be_success
+        it 'fails to create customer' do
+          result = customers_service.create_from_api(
+            organization:,
+            params: create_args,
+          )
 
-        aggregate_failures do
-          customer = result.customer
-          expect(customer.id).to be_present
-          expect(customer.payment_provider).to eq('gocardless')
+          expect(result.error).to be_a(BaseService::ValidationFailure)
+          expect(result.error.messages).to eq(error_messages)
+        end
+      end
 
-          expect(customer.gocardless_customer).to be_present
+      context 'when payment provider exists' do
+        before { create(:gocardless_provider, organization:, code: 'gocardless_1') }
 
-          gocardless_customer = customer.gocardless_customer
-          expect(gocardless_customer.id).to be_present
-          expect(gocardless_customer.provider_customer_id).to eq('gocardless_id')
+        it 'creates a gocardless customer' do
+          result = customers_service.create_from_api(
+            organization:,
+            params: create_args,
+          )
+
+          expect(result).to be_success
+
+          aggregate_failures do
+            customer = result.customer
+            expect(customer.id).to be_present
+            expect(customer.payment_provider).to eq('gocardless')
+
+            expect(customer.gocardless_customer).to be_present
+
+            gocardless_customer = customer.gocardless_customer
+            expect(gocardless_customer.id).to be_present
+            expect(gocardless_customer.provider_customer_id).to eq('gocardless_id')
+          end
         end
       end
     end
@@ -609,6 +682,8 @@ RSpec.describe Customers::CreateService, type: :service do
             :customer,
             organization:,
             external_id: create_args[:external_id],
+            payment_provider: nil,
+            payment_provider_code: nil,
             email: 'foo@bar.com',
           )
         end
@@ -718,6 +793,32 @@ RSpec.describe Customers::CreateService, type: :service do
             expect(result.customer.taxes.count).to eq(1)
             expect(result.customer.taxes.first.code).to eq('tax_20')
           end
+        end
+      end
+    end
+
+    context 'when organization has eu tax management' do
+      let(:eu_auto_tax_service) { instance_double(Customers::EuAutoTaxesService) }
+
+      before do
+        create(:tax, organization:, code: 'lago_eu_fr_standard', rate: 20.0)
+        organization.update(eu_tax_management: true)
+
+        allow(Customers::EuAutoTaxesService).to receive(:new).and_return(eu_auto_tax_service)
+        allow(eu_auto_tax_service).to receive(:call).and_return('lago_eu_fr_standard')
+      end
+
+      it 'assigns the right tax to the customer' do
+        result = customers_service.create_from_api(
+          organization:,
+          params: create_args,
+        )
+
+        aggregate_failures do
+          expect(result).to be_success
+
+          tax = result.customer.taxes.first
+          expect(tax.code).to eq('lago_eu_fr_standard')
         end
       end
     end
@@ -951,6 +1052,29 @@ RSpec.describe Customers::CreateService, type: :service do
             expect(customer.payment_provider).to eq('gocardless')
             expect(customer.gocardless_customer).to be_present
           end
+        end
+      end
+    end
+
+    context 'when organization has eu tax management' do
+      let(:eu_auto_tax_service) { instance_double(Customers::EuAutoTaxesService) }
+
+      before do
+        create(:tax, organization:, code: 'lago_eu_fr_standard', rate: 20.0)
+        organization.update(eu_tax_management: true)
+
+        allow(Customers::EuAutoTaxesService).to receive(:new).and_return(eu_auto_tax_service)
+        allow(eu_auto_tax_service).to receive(:call).and_return('lago_eu_fr_standard')
+      end
+
+      it 'assigns the right tax to the customer' do
+        result = customers_service.create(**create_args)
+
+        aggregate_failures do
+          expect(result).to be_success
+
+          tax = result.customer.taxes.first
+          expect(tax.code).to eq('lago_eu_fr_standard')
         end
       end
     end

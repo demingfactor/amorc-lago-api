@@ -123,6 +123,44 @@ RSpec.describe Subscriptions::CreateService, type: :service do
           expect(result.subscription).to be_calendar
         end
       end
+
+      context 'when billing time is empty' do
+        let(:billing_time) { '' }
+
+        it 'creates a calendar subscription' do
+          result = create_service.call
+
+          aggregate_failures do
+            expect(result).not_to be_success
+            expect(result.error).to be_a(BaseService::ValidationFailure)
+            expect(result.error.messages[:billing_time]).to eq(['value_is_mandatory'])
+          end
+        end
+      end
+    end
+
+    context 'when License is free and plan_overrides is passed' do
+      let(:params) do
+        {
+          external_customer_id:,
+          plan_code:,
+          name:,
+          external_id:,
+          billing_time:,
+          subscription_at:,
+          subscription_id:,
+          plan_overrides: {
+            amount_cents: 0,
+          },
+        }
+      end
+
+      it 'returns an error' do
+        result = create_service.call
+
+        expect(result).not_to be_success
+        expect(result.error.code).to eq('feature_unavailable')
+      end
     end
 
     context 'when customer does not exists in API context' do

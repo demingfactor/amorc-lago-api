@@ -5,18 +5,23 @@ require 'rails_helper'
 RSpec.describe BillableMetrics::ProratedAggregations::SumService, type: :service, transaction: false do
   subject(:sum_service) do
     described_class.new(
-      billable_metric:,
+      event_store_class:,
+      charge:,
       subscription:,
-      group:,
-      event: pay_in_advance_event,
       boundaries: {
         from_datetime:,
         to_datetime:,
       },
+      filters: {
+        group:,
+        event: pay_in_advance_event,
+      },
     )
   end
 
-  let(:subscription) { create(:subscription, started_at: DateTime.parse('2022-12-01 00:00:00')) }
+  let(:event_store_class) { Events::Stores::PostgresStore }
+
+  let(:subscription) { create(:subscription, started_at: Time.zone.parse('2022-12-01 00:00:00')) }
   let(:organization) { subscription.organization }
   let(:customer) { subscription.customer }
   let(:group) { nil }
@@ -31,8 +36,15 @@ RSpec.describe BillableMetrics::ProratedAggregations::SumService, type: :service
     )
   end
 
-  let(:from_datetime) { DateTime.parse('2023-05-01 00:00:00') }
-  let(:to_datetime) { DateTime.parse('2023-05-31 23:59:59') }
+  let(:charge) do
+    create(
+      :standard_charge,
+      billable_metric:,
+    )
+  end
+
+  let(:from_datetime) { Time.zone.parse('2023-05-01 00:00:00') }
+  let(:to_datetime) { Time.zone.parse('2023-05-31 23:59:59') }
   let(:pay_in_advance_event) { nil }
   let(:options) { {} }
 
@@ -189,6 +201,7 @@ RSpec.describe BillableMetrics::ProratedAggregations::SumService, type: :service
     let(:options) do
       { is_pay_in_advance: true, is_current_usage: true }
     end
+
     let(:latest_events) do
       create(
         :event,
@@ -199,13 +212,24 @@ RSpec.describe BillableMetrics::ProratedAggregations::SumService, type: :service
         properties: {
           total_count: 4,
         },
-        metadata: {
-          current_aggregation: '4',
-          max_aggregation: '6',
-          max_aggregation_with_proration: '3.8',
-        },
       )
     end
+
+    let(:cached_aggregation) do
+      create(
+        :cached_aggregation,
+        organization: billable_metric.organization,
+        charge:,
+        external_subscription_id: subscription.external_id,
+        event_id: latest_events.id,
+        timestamp: latest_events.timestamp,
+        current_aggregation: '4',
+        max_aggregation: '6',
+        max_aggregation_with_proration: '3.8',
+      )
+    end
+
+    before { cached_aggregation }
 
     it 'returns period maximum as aggregation' do
       result = sum_service.aggregate(options:)
@@ -214,8 +238,9 @@ RSpec.describe BillableMetrics::ProratedAggregations::SumService, type: :service
       expect(result.current_usage_units).to eq(9)
     end
 
-    context 'when previous event does not exist' do
+    context 'when cached aggregation does not exist' do
       let(:latest_events) { nil }
+      let(:cached_aggregation) { nil }
 
       it 'returns zero as aggregation' do
         result = sum_service.aggregate(options:)
@@ -227,7 +252,7 @@ RSpec.describe BillableMetrics::ProratedAggregations::SumService, type: :service
   end
 
   context 'when current usage context and charge is pay in advance and just upgraded' do
-    let(:from_datetime) { DateTime.parse('2023-05-15 00:00:00') }
+    let(:from_datetime) { Time.zone.parse('2023-05-15 00:00:00') }
     let(:options) do
       { is_pay_in_advance: true, is_current_usage: true }
     end
@@ -242,10 +267,11 @@ RSpec.describe BillableMetrics::ProratedAggregations::SumService, type: :service
   end
 
   context 'when current usage context and charge is pay in advance and just upgraded and new event in period' do
-    let(:from_datetime) { DateTime.parse('2023-05-15 00:00:00') }
+    let(:from_datetime) { Time.zone.parse('2023-05-15 00:00:00') }
     let(:options) do
       { is_pay_in_advance: true, is_current_usage: true }
     end
+
     let(:latest_events) do
       create(
         :event,
@@ -256,13 +282,24 @@ RSpec.describe BillableMetrics::ProratedAggregations::SumService, type: :service
         properties: {
           total_count: 4,
         },
-        metadata: {
-          current_aggregation: '4',
-          max_aggregation: '6',
-          max_aggregation_with_proration: '3.8',
-        },
       )
     end
+
+    let(:cached_aggregation) do
+      create(
+        :cached_aggregation,
+        organization: billable_metric.organization,
+        charge:,
+        external_subscription_id: subscription.external_id,
+        event_id: latest_events.id,
+        timestamp: latest_events.timestamp,
+        current_aggregation: '4',
+        max_aggregation: '6',
+        max_aggregation_with_proration: '3.8',
+      )
+    end
+
+    before { cached_aggregation }
 
     it 'returns correct values' do
       result = sum_service.aggregate(options:)
@@ -391,13 +428,24 @@ RSpec.describe BillableMetrics::ProratedAggregations::SumService, type: :service
           properties: {
             total_count: -6,
           },
-          metadata: {
-            current_aggregation: '4',
-            max_aggregation: '10',
-            max_aggregation_with_proration: '3.2',
-          },
         )
       end
+
+      let(:cached_aggregation) do
+        create(
+          :cached_aggregation,
+          organization: billable_metric.organization,
+          charge:,
+          external_subscription_id: subscription.external_id,
+          event_id: latest_events.id,
+          timestamp: latest_events.timestamp,
+          current_aggregation: '4',
+          max_aggregation: '10',
+          max_aggregation_with_proration: '3.2',
+        )
+      end
+
+      before { cached_aggregation }
 
       it 'assigns a pay_in_advance aggregation' do
         result = sum_service.aggregate
@@ -418,13 +466,24 @@ RSpec.describe BillableMetrics::ProratedAggregations::SumService, type: :service
           properties: {
             total_count: -6,
           },
-          metadata: {
-            current_aggregation: '4',
-            max_aggregation: '10',
-            max_aggregation_with_proration: '3.2',
-          },
         )
       end
+
+      let(:cached_aggregation) do
+        create(
+          :cached_aggregation,
+          organization: billable_metric.organization,
+          charge:,
+          external_subscription_id: subscription.external_id,
+          event_id: latest_events.id,
+          timestamp: latest_events.timestamp,
+          current_aggregation: '4',
+          max_aggregation: '10',
+          max_aggregation_with_proration: '3.2',
+        )
+      end
+
+      before { cached_aggregation }
 
       it 'assigns a pay_in_advance aggregation' do
         result = sum_service.aggregate
@@ -462,6 +521,16 @@ RSpec.describe BillableMetrics::ProratedAggregations::SumService, type: :service
 
         expect(result.pay_in_advance_aggregation).to be_zero
       end
+    end
+  end
+
+  describe '.per_event_aggregation' do
+    it 'aggregates per events' do
+      sum_service.options = {}
+      result = sum_service.per_event_aggregation
+
+      expect(result.event_aggregation).to eq([5, 12, 12])
+      expect(result.event_prorated_aggregation.map { |el| el.round(5) }).to eq([5, 2.32258, 2.32258])
     end
   end
 end

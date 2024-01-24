@@ -63,7 +63,7 @@ module Subscriptions
       # NOTE: If customer applicable timezone changes during a billing period, there is a risk to double count events
       #       or to miss some. To prevent it, we have to ensure that invoice bounds does not overlap or that there is no
       #       hole bewtween a charges_from_datetime and the charges_to_datetime of the previous period
-      if timezone_has_changed?
+      if timezone_has_changed? && previous_charge_to_datetime
         new_datetime = previous_charge_to_datetime + 1.second
 
         # NOTE: Ensure that the invoice is really the previous one
@@ -71,9 +71,7 @@ module Subscriptions
         datetime = new_datetime if ((datetime.in_time_zone - new_datetime.in_time_zone) / 1.hour).abs < 26
       end
 
-      if datetime < subscription.started_at
-        datetime = subscription.started_at.in_time_zone(customer.applicable_timezone).beginning_of_day.utc
-      end
+      datetime = subscription.started_at if datetime < subscription.started_at
 
       datetime
     end

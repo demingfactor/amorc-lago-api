@@ -7,8 +7,8 @@ module BillableMetrics
         @aggregation_without_proration ||= base_aggregator.aggregate(options:)
       end
 
-      def previous_event
-        @previous_event ||= base_aggregator.get_previous_event_in_interval(from_datetime:, to_datetime:)
+      def cached_aggregation
+        @cached_aggregation ||= base_aggregator.get_cached_aggregation_in_interval(from_datetime:, to_datetime:)
       end
 
       def compute_pay_in_advance_aggregation
@@ -19,41 +19,39 @@ module BillableMetrics
         result.full_units_number = result_without_proration
         result.units_applied = aggregation_without_proration.units_applied
 
-        number_of_seconds = to_datetime.in_time_zone(customer.applicable_timezone) -
-                            event.timestamp.in_time_zone(customer.applicable_timezone)
         # In order to get proration coefficient we have to divide number of seconds with number
         # of seconds in one day (86400). That way we will get number of days when the service was used.
-        proration_coefficient = number_of_seconds.fdiv(1.day).ceil.fdiv(period_duration)
+        proration_coefficient = Utils::DatetimeService.date_diff_with_timezone(
+          event.timestamp,
+          to_datetime,
+          customer.applicable_timezone,
+        ).fdiv(period_duration)
 
         value = (result_without_proration * proration_coefficient).ceil(5)
 
-        extend_event_metadata(value)
+        extend_cached_aggregation(value)
 
         value
       end
 
-      # We need to extend event metadata with max_aggregation_with_proration. This attribute will be used
+      # We need to extend cached aggregation with max_aggregation_with_proration. This attribute will be used
       # for current usage in pay_in_advance case
-      def extend_event_metadata(prorated_value)
+      def extend_cached_aggregation(prorated_value)
         result.max_aggregation = aggregation_without_proration.max_aggregation
         result.current_aggregation = aggregation_without_proration.current_aggregation
 
-        unless previous_event
+        unless cached_aggregation
           result.max_aggregation_with_proration = prorated_value.to_s
 
           return
         end
 
-        if BigDecimal(aggregation_without_proration.max_aggregation) >
-           BigDecimal(previous_event.metadata['max_aggregation'])
-          result.max_aggregation_with_proration =
-            (
-              BigDecimal(previous_event.metadata['max_aggregation_with_proration']) +
-              prorated_value
-            ).to_s
-        else
-          result.max_aggregation_with_proration =
-            BigDecimal(previous_event.metadata['max_aggregation_with_proration'])
+        result.max_aggregation_with_proration = begin
+          if BigDecimal(aggregation_without_proration.max_aggregation) > BigDecimal(cached_aggregation.max_aggregation)
+            BigDecimal(cached_aggregation.max_aggregation_with_proration) + prorated_value
+          else
+            BigDecimal(cached_aggregation.max_aggregation_with_proration)
+          end
         end
       end
 
@@ -66,18 +64,18 @@ module BillableMetrics
         if !is_pay_in_advance
           result.aggregation = result_with_proration.negative? ? 0 : result_with_proration
           result.current_usage_units = value_without_proration.negative? ? 0 : value_without_proration
-        elsif previous_event && persisted_pro_rata < 1
+        elsif cached_aggregation && persisted_pro_rata < 1
           result.current_usage_units = aggregation_without_proration.current_usage_units
 
           persisted_units_without_proration = aggregation_without_proration.current_usage_units -
-                                              BigDecimal(previous_event.metadata['current_aggregation'])
+                                              BigDecimal(cached_aggregation.current_aggregation)
           result.aggregation = (persisted_units_without_proration * persisted_pro_rata).ceil(5) +
-                               BigDecimal(previous_event.metadata['max_aggregation_with_proration'])
-        elsif previous_event
+                               BigDecimal(cached_aggregation.max_aggregation_with_proration)
+        elsif cached_aggregation
           result.current_usage_units = aggregation_without_proration.current_usage_units
           result.aggregation = aggregation_without_proration.current_usage_units -
-                               BigDecimal(previous_event.metadata['current_aggregation']) +
-                               BigDecimal(previous_event.metadata['max_aggregation_with_proration'])
+                               BigDecimal(cached_aggregation.current_aggregation) +
+                               BigDecimal(cached_aggregation.max_aggregation_with_proration)
         elsif persisted_pro_rata < 1
           result.aggregation = result_with_proration.negative? ? 0 : result_with_proration
           result.current_usage_units = aggregation_without_proration.current_usage_units
@@ -101,12 +99,32 @@ module BillableMetrics
       #       we want to bill the persisted metrics at prorata of the full period duration.
       #       ie: the number of day of the terminated period divided by number of days without termination
       def persisted_pro_rata
-        ((to_datetime.to_time - from_datetime.to_time) / 1.day).ceil.fdiv(period_duration)
+        Utils::DatetimeService.date_diff_with_timezone(
+          from_datetime,
+          to_datetime,
+          subscription.customer.applicable_timezone,
+        ).fdiv(period_duration)
       end
+
+      attr_accessor :options
 
       private
 
       attr_reader :base_aggregator
+
+      def previous_charge_fee
+        subscription_ids = customer.subscriptions
+          .where(external_id: subscription.external_id)
+          .pluck(:id)
+
+        Fee.joins(:charge)
+          .where(charge: { billable_metric_id: billable_metric.id })
+          .where(charge: { prorated: true })
+          .where(subscription_id: subscription_ids, fee_type: :charge, group_id: group&.id)
+          .where("CAST(fees.properties->>'charges_to_datetime' AS timestamp) < ?", boundaries[:to_datetime])
+          .order(created_at: :desc)
+          .first
+      end
     end
   end
 end

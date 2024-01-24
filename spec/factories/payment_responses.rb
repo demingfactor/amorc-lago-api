@@ -3,6 +3,7 @@
 FactoryBot.define do
   sequence :adyen_payments_response do
     OpenStruct.new(
+      status: 200,
       response: {
         'additionalData' => {
           'recurringProcessingModel' => 'UnscheduledCardOnFile',
@@ -14,8 +15,19 @@ FactoryBot.define do
     )
   end
 
+  sequence :adyen_payments_error_response do
+    OpenStruct.new(
+      status: 422,
+      response: {
+        'errorType' => 'validation',
+        'message' => 'There are no payment methods available for the given parameters.',
+      },
+    )
+  end
+
   sequence :adyen_payment_links_response do
     OpenStruct.new(
+      status: 200,
       response: {
         'amount' => {
           'currency' => 'EUR',
@@ -35,8 +47,19 @@ FactoryBot.define do
     )
   end
 
+  sequence :adyen_payment_links_error_response do
+    OpenStruct.new(
+      status: 422,
+      response: {
+        'errorType' => 'validation',
+        'message' => 'There are no payment methods available for the given parameters.',
+      },
+    )
+  end
+
   sequence :adyen_payment_methods_response do
     OpenStruct.new(
+      status: 200,
       response: {
         'paymentMethods' => [
           {

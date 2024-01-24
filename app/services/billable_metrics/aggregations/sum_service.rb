@@ -3,8 +3,16 @@
 module BillableMetrics
   module Aggregations
     class SumService < BillableMetrics::Aggregations::BaseService
+      def initialize(...)
+        super(...)
+
+        event_store.numeric_property = true
+        event_store.aggregation_property = billable_metric.field_name
+        event_store.use_from_boundary = !billable_metric.recurring
+      end
+
       def aggregate(options: {})
-        aggregation = events.sum("(#{sanitized_field_name})::numeric")
+        aggregation = event_store.sum
 
         if options[:is_pay_in_advance] && options[:is_current_usage]
           handle_in_advance_current_usage(aggregation)
@@ -13,45 +21,36 @@ module BillableMetrics
         end
 
         result.pay_in_advance_aggregation = compute_pay_in_advance_aggregation
-        result.count = events.count
-        result.options = { running_total: running_total(events, options) }
+        result.count = event_store.count
+        result.options = { running_total: running_total(options) }
         result
       rescue ActiveRecord::StatementInvalid => e
         result.service_failure!(code: 'aggregation_failure', message: e.message)
       end
 
       # NOTE: Return cumulative sum of field_name based on the number of free units (per_events or per_total_aggregation).
-      def running_total(events, options)
+      def running_total(options)
         free_units_per_events = options[:free_units_per_events].to_i
         free_units_per_total_aggregation = BigDecimal(options[:free_units_per_total_aggregation] || 0)
 
         return [] if free_units_per_events.zero? && free_units_per_total_aggregation.zero?
+        return running_total_per_events(free_units_per_events) unless free_units_per_events.zero?
 
-        events = events.order(created_at: :asc)
-        return running_total_per_events(events, free_units_per_events) unless free_units_per_events.zero?
-
-        running_total_per_aggregation(events, free_units_per_total_aggregation)
+        running_total_per_aggregation(free_units_per_total_aggregation)
       end
 
-      def running_total_per_events(events, limit)
+      def running_total_per_events(limit)
         total = 0.0
-
-        events
-          .limit(limit)
-          .pluck(Arel.sql("(#{sanitized_field_name})::numeric"))
-          .map { |x| total += x }
+        event_store.events_values(limit:).map { |x| total += x }
       end
 
-      def running_total_per_aggregation(events, aggregation)
+      def running_total_per_aggregation(aggregation)
         total = 0.0
+        event_store.events_values.each_with_object([]) do |val, accumulator|
+          break accumulator if aggregation < total
 
-        events
-          .pluck(Arel.sql("(#{sanitized_field_name})::numeric"))
-          .each_with_object([]) do |val, accumulator|
-            break accumulator if aggregation < total
-
-            accumulator << total += val
-          end
+          accumulator << total += val
+        end
       end
 
       def compute_pay_in_advance_aggregation
@@ -60,16 +59,16 @@ module BillableMetrics
 
         value = event.properties.fetch(billable_metric.field_name, 0).to_s
 
-        unless previous_event
+        unless cached_aggregation
           return_value = BigDecimal(value).negative? ? '0' : value
           handle_event_metadata(current_aggregation: value, max_aggregation: value, units_applied: value)
 
           return BigDecimal(return_value)
         end
 
-        current_aggregation = BigDecimal(previous_event.metadata['current_aggregation']) + BigDecimal(value)
+        current_aggregation = BigDecimal(cached_aggregation.current_aggregation) + BigDecimal(value)
 
-        old_max = BigDecimal(previous_event.metadata['max_aggregation'])
+        old_max = BigDecimal(cached_aggregation.max_aggregation)
 
         result = if current_aggregation > old_max
           diff = [current_aggregation, current_aggregation - old_max].max
@@ -86,46 +85,29 @@ module BillableMetrics
       end
 
       def compute_per_event_aggregation
-        events_scope(from_datetime:, to_datetime:).pluck(Arel.sql("COALESCE((#{sanitized_field_name})::numeric, 0)"))
+        event_store.events_values(force_from: true)
       end
 
       protected
 
-      def events
-        @events ||= begin
-          query = if billable_metric.recurring?
-            recurring_events_scope(to_datetime:)
-          else
-            events_scope(from_datetime:, to_datetime:)
-          end
-
-          query.where(field_presence_condition)
-            .where(field_numeric_condition)
-        end
-      end
-
-      # This method fetches the latest event in current period. If such a event exists we know that metadata
-      # with previous aggregation and previous maximum aggregation are stored there. Fetching these metadata values
+      # This method fetches the latest cached aggregation in current period. If such a record exists we know that
+      # previous aggregation and previous maximum aggregation are stored there. Fetching these values
       # would help us in pay in advance value calculation without iterating through all events in current period
-      def previous_event
-        @previous_event ||= begin
-          query = if billable_metric.recurring?
-            recurring_events_scope(to_datetime:, from_datetime:)
-          else
-            events_scope(from_datetime:, to_datetime:)
-          end
-          scope = query.where(field_presence_condition).where(field_numeric_condition)
+      def cached_aggregation
+        return @cached_aggregation if @cached_aggregation
 
-          # Events without attached right metadata are ignored since such events cannot be processed correctly.
-          # Could happen in race condition when event is stored but metadata in async job are attached later.
-          # In the meantime we want to avoid any issues with not attached metadata.
-          scope = scope.where("events.metadata->>'current_aggregation' IS NOT NULL")
-          scope = scope.where("events.metadata->>'max_aggregation' IS NOT NULL")
+        query = CachedAggregation
+          .where(organization_id: billable_metric.organization_id)
+          .where(external_subscription_id: subscription.external_id)
+          .where(charge_id: charge.id)
+          .from_datetime(from_datetime)
+          .to_datetime(to_datetime)
+          .order(timestamp: :desc)
 
-          scope = scope.where.not(id: event.id) if event.present?
+        query = query.where.not(event_id: event.id) if event.present?
+        query = query.where(group_id: group.id) if group
 
-          scope.reorder(created_at: :desc).first
-        end
+        @cached_aggregation = query.first
       end
 
       def handle_event_metadata(current_aggregation: nil, max_aggregation: nil, units_applied: nil)

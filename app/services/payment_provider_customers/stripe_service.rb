@@ -2,7 +2,7 @@
 
 module PaymentProviderCustomers
   class StripeService < BaseService
-    CHECKOUT_SUCCESS_URL = 'https://www.getlago.com'
+    include Customers::PaymentProviderFinder
 
     def initialize(stripe_customer = nil)
       @stripe_customer = stripe_customer
@@ -12,10 +12,10 @@ module PaymentProviderCustomers
 
     def create
       result.stripe_customer = stripe_customer
-      return result if stripe_customer.provider_customer_id?
+      return result if stripe_customer.provider_customer_id? || !stripe_payment_provider
 
       stripe_result = create_stripe_customer
-      return result unless stripe_result
+      return result if !stripe_result || !result.success?
 
       stripe_customer.update!(
         provider_customer_id: stripe_result.id,
@@ -26,6 +26,22 @@ module PaymentProviderCustomers
 
       result.stripe_customer = stripe_customer
       result
+    end
+
+    def update
+      return result unless stripe_payment_provider
+
+      Stripe::Customer.update(stripe_customer.provider_customer_id, stripe_update_payload, { api_key: })
+      result
+    rescue Stripe::InvalidRequestError, Stripe::PermissionError => e
+      deliver_error_webhook(e)
+
+      result.service_failure!(code: 'stripe_error', message: e.message)
+    rescue Stripe::AuthenticationError => e
+      deliver_error_webhook(e)
+
+      message = ['Stripe authentication failed.', e.message.presence].compact.join(' ')
+      result.unauthorized_failure!(message:)
     end
 
     def update_payment_method(organization_id:, stripe_customer_id:, payment_method_id:, metadata: {})
@@ -94,8 +110,8 @@ module PaymentProviderCustomers
       result.single_validation_failure!(field: :payment_method_id, error_code: 'value_is_invalid')
     end
 
-    def generate_checkout_url
-      return result unless customer.organization.webhook_endpoints.any?
+    def generate_checkout_url(send_webhook: true)
+      return result unless customer.organization.webhook_endpoints.any? || !send_webhook || !payment_provider(customer)
 
       res = Stripe::Checkout::Session.create(
         checkout_link_params,
@@ -106,11 +122,13 @@ module PaymentProviderCustomers
 
       result.checkout_url = res['url']
 
-      SendWebhookJob.perform_later(
-        'customer.checkout_url_generated',
-        customer,
-        checkout_url: result.checkout_url,
-      )
+      if send_webhook
+        SendWebhookJob.perform_later(
+          'customer.checkout_url_generated',
+          customer,
+          checkout_url: result.checkout_url,
+        )
+      end
 
       result
     rescue Stripe::InvalidRequestError, Stripe::PermissionError => e
@@ -129,16 +147,21 @@ module PaymentProviderCustomers
     end
 
     def api_key
-      organization.stripe_payment_provider.secret_key
+      stripe_payment_provider.secret_key
     end
 
     def checkout_link_params
       {
-        success_url: CHECKOUT_SUCCESS_URL,
+        success_url: success_redirect_url,
         mode: 'setup',
         payment_method_types: stripe_customer.provider_payment_methods,
         customer: stripe_customer.provider_customer_id,
       }
+    end
+
+    def success_redirect_url
+      stripe_payment_provider.success_redirect_url.presence ||
+        PaymentProviders::StripeProvider::SUCCESS_REDIRECT_URL
     end
 
     def create_stripe_customer
@@ -152,6 +175,11 @@ module PaymentProviderCustomers
     rescue Stripe::InvalidRequestError, Stripe::PermissionError => e
       deliver_error_webhook(e)
       nil
+    rescue Stripe::AuthenticationError => e
+      deliver_error_webhook(e)
+
+      message = ['Stripe authentication failed.', e.message.presence].compact.join(' ')
+      result.unauthorized_failure!(message:)
     end
 
     def stripe_create_payload
@@ -170,6 +198,22 @@ module PaymentProviderCustomers
           lago_customer_id: customer.id,
           customer_id: customer.external_id,
         },
+        phone: customer.phone,
+      }
+    end
+
+    def stripe_update_payload
+      {
+        address: {
+          city: customer.city,
+          country: customer.country,
+          line1: customer.address_line1,
+          line2: customer.address_line2,
+          postal_code: customer.zipcode,
+          state: customer.state,
+        },
+        email: customer.email,
+        name: customer.name,
         phone: customer.phone,
       }
     end
@@ -220,6 +264,10 @@ module PaymentProviderCustomers
       return result if Customer.find_by(id: metadata[:lago_customer_id], organization_id:).nil?
 
       result.not_found_failure!(resource: 'stripe_customer')
+    end
+
+    def stripe_payment_provider
+      @stripe_payment_provider ||= payment_provider(customer)
     end
   end
 end

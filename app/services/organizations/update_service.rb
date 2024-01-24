@@ -22,7 +22,10 @@ module Organizations
       organization.city = params[:city] if params.key?(:city)
       organization.state = params[:state] if params.key?(:state)
       organization.country = params[:country]&.upcase if params.key?(:country)
+      organization.default_currency = params[:default_currency]&.upcase if params.key?(:default_currency)
       organization.net_payment_term = params[:net_payment_term] if params.key?(:net_payment_term)
+      organization.document_numbering = params[:document_numbering] if params.key?(:document_numbering)
+      organization.document_number_prefix = params[:document_number_prefix] if params.key?(:document_number_prefix)
 
       billing = params[:billing_configuration]&.to_h || {}
       organization.invoice_footer = billing[:invoice_footer] if billing.key?(:invoice_footer)
@@ -31,9 +34,12 @@ module Organizations
       # NOTE(legacy): keep accepting vat_rate field temporary by converting it into tax rate
       handle_legacy_vat_rate(billing[:vat_rate]) if billing.key?(:vat_rate)
 
+      # NOTE: handle eu tax management for organization
+      handle_eu_tax_management(params[:eu_tax_management]) if params.key?(:eu_tax_management)
+
       if params.key?(:webhook_url)
         webhook_endpoint = organization.webhook_endpoints.first_or_initialize
-        webhook_endpoint.update! webhook_url: params[:webhook_url]
+        webhook_endpoint.update!(webhook_url: params[:webhook_url])
       end
 
       if License.premium? && billing.key?(:invoice_grace_period)
@@ -111,6 +117,13 @@ module Organizations
         name: "Tax (#{vat_rate}%)",
         applied_to_organization: true,
       ).find_or_create_by!(code: "tax_#{vat_rate}")
+    end
+
+    def handle_eu_tax_management(eu_tax_management)
+      # NOTE: even if the organization had eu tax management, we call this service again, it uses an upsert for taxes.
+      Taxes::AutoGenerateService.new(organization:).call if eu_tax_management
+
+      organization.eu_tax_management = eu_tax_management
     end
   end
 end

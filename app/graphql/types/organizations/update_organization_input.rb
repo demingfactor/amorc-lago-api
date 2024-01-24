@@ -5,6 +5,7 @@ module Types
     class UpdateOrganizationInput < BaseInputObject
       description 'Update Organization input arguments'
 
+      argument :default_currency, Types::CurrencyEnum, required: false
       argument :email, String, required: false
       argument :legal_name, String, required: false
       argument :legal_number, String, required: false
@@ -22,6 +23,11 @@ module Types
       argument :webhook_url, String, required: false
 
       argument :timezone, Types::TimezoneEnum, required: false
+
+      argument :eu_tax_management, Boolean, required: false
+
+      argument :document_number_prefix, String, required: false
+      argument :document_numbering, Types::Organizations::DocumentNumberingEnum, required: false
 
       argument :billing_configuration, Types::Organizations::BillingConfigurationInput, required: false
       argument :email_settings, [Types::Organizations::EmailSettingsEnum], required: false

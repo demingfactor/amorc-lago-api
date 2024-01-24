@@ -13,16 +13,16 @@ module Charges
     end
 
     def call
-      aggregator = aggregator_service.new(
-        billable_metric:,
+      aggregator = BillableMetrics::AggregationFactory.new_instance(
+        charge:,
         subscription:,
-        group:,
-        event:,
         boundaries: {
           from_datetime: boundaries[:charges_from_datetime],
           to_datetime: boundaries[:charges_to_datetime],
         },
+        filters: aggregation_filters,
       )
+
       aggregator.aggregate(options: aggregation_options)
     end
 
@@ -33,32 +33,26 @@ module Charges
     delegate :subscription, to: :event
     delegate :billable_metric, to: :charge
 
-    def aggregator_service
-      @aggregator_service ||= case billable_metric.aggregation_type.to_sym
-                              when :count_agg
-                                BillableMetrics::Aggregations::CountService
-                              when :sum_agg
-                                if charge.prorated?
-                                  BillableMetrics::ProratedAggregations::SumService
-                                else
-                                  BillableMetrics::Aggregations::SumService
-                                end
-                              when :unique_count_agg
-                                if charge.prorated?
-                                  BillableMetrics::ProratedAggregations::UniqueCountService
-                                else
-                                  BillableMetrics::Aggregations::UniqueCountService
-                                end
-                              else
-                                raise(NotImplementedError)
-      end
-    end
-
     def aggregation_options
       {
         free_units_per_events: properties['free_units_per_events'].to_i,
         free_units_per_total_aggregation: BigDecimal(properties['free_units_per_total_aggregation'] || 0),
       }
+    end
+
+    def aggregation_filters
+      filters = {
+        group:,
+        event:,
+      }
+
+      if charge.standard? && charge.properties['grouped_by'].present?
+        filters[:grouped_by_values] = charge.properties['grouped_by'].index_with do |grouped_by|
+          event.properties[grouped_by]
+        end
+      end
+
+      filters
     end
   end
 end

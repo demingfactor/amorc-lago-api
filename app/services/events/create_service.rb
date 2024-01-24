@@ -24,6 +24,7 @@ module Events
 
       result.event = event
 
+      produce_kafka_event(event)
       Events::PostProcessJob.perform_later(event:)
 
       result
@@ -36,5 +37,23 @@ module Events
     private
 
     attr_reader :organization, :params, :timestamp, :metadata
+
+    def produce_kafka_event(event)
+      return if ENV['LAGO_KAFKA_BOOTSTRAP_SERVERS'].blank?
+      return if ENV['LAGO_KAFKA_RAW_EVENTS_TOPIC'].blank?
+
+      Karafka.producer.produce_async(
+        topic: ENV['LAGO_KAFKA_RAW_EVENTS_TOPIC'],
+        payload: {
+          organization_id: organization.id,
+          external_customer_id: event.external_customer_id,
+          external_subscription_id: event.external_subscription_id,
+          transaction_id: event.transaction_id,
+          timestamp: event.timestamp,
+          code: event.code,
+          properties: event.properties,
+        }.to_json,
+      )
+    end
   end
 end

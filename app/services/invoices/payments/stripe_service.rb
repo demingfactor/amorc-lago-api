@@ -3,6 +3,8 @@
 module Invoices
   module Payments
     class StripeService < BaseService
+      include Customers::PaymentProviderFinder
+
       PENDING_STATUSES = %w[processing requires_capture requires_action requires_confirmation requires_payment_method]
         .freeze
       SUCCESS_STATUSES = %w[succeeded].freeze
@@ -31,7 +33,7 @@ module Invoices
 
         payment = Payment.new(
           invoice:,
-          payment_provider_id: organization.stripe_payment_provider.id,
+          payment_provider_id: stripe_payment_provider.id,
           payment_provider_customer_id: customer.stripe_customer.id,
           amount_cents: stripe_result.amount,
           amount_currency: stripe_result.currency&.upcase,
@@ -77,13 +79,13 @@ module Invoices
 
       def should_process_payment?
         return false if invoice.succeeded? || invoice.voided?
-        return false if organization.stripe_payment_provider.blank?
+        return false if stripe_payment_provider.blank?
 
         customer&.stripe_customer&.provider_customer_id
       end
 
       def stripe_api_key
-        organization.stripe_payment_provider.secret_key
+        stripe_payment_provider.secret_key
       end
 
       def stripe_payment_method
@@ -140,6 +142,10 @@ module Invoices
           },
         )
       rescue Stripe::CardError, Stripe::InvalidRequestError, Stripe::PermissionError => e
+        # NOTE: Do not mark the invoice as failed if the amount is too small for Stripe
+        #       For now we keep it as pending, the user can still update it manually
+        return if e.code == 'amount_too_small'
+
         deliver_error_webhook(e)
         update_invoice_payment_status(payment_status: :failed, deliver_webhook: false)
         nil
@@ -217,6 +223,10 @@ module Invoices
         return result if invoice.failed?
 
         result.not_found_failure!(resource: 'stripe_payment')
+      end
+
+      def stripe_payment_provider
+        @stripe_payment_provider ||= payment_provider(customer)
       end
     end
   end

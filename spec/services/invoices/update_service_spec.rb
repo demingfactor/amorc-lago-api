@@ -47,6 +47,30 @@ RSpec.describe Invoices::UpdateService do
       )
     end
 
+    context 'when updating payment status' do
+      context 'when invoice is in draft status' do
+        let(:invoice) { create(:invoice, :draft) }
+
+        it 'does not update the invoice' do
+          aggregate_failures do
+            expect(result).not_to be_success
+            expect(result.error).to be_a(BaseService::MethodNotAllowedFailure)
+            expect(result.error.code).to eq('payment_status_update_on_draft_invoice')
+          end
+        end
+      end
+
+      context 'when invoice is not in draft status' do
+        it 'updates the invoice' do
+          aggregate_failures do
+            expect(result).to be_success
+            expect(result.invoice).to eq(invoice)
+            expect(result.invoice.payment_status).to eq(update_args[:payment_status])
+          end
+        end
+      end
+    end
+
     context 'with attached fees' do
       it 'euqueus a job to update the payment_status of the fees' do
         result
@@ -186,6 +210,19 @@ RSpec.describe Invoices::UpdateService do
           'invoice.payment_status_updated',
           invoice,
         )
+      end
+
+      context 'when payment status has not changed' do
+        let(:invoice) { create(:invoice, payment_status: :succeeded) }
+
+        it 'does not deliver a webhook' do
+          result
+
+          expect(SendWebhookJob).not_to have_been_enqueued.with(
+            'invoice.payment_status_updated',
+            invoice,
+          )
+        end
       end
     end
 

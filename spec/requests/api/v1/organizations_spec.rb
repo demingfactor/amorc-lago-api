@@ -10,6 +10,7 @@ RSpec.describe Api::V1::OrganizationsController, type: :request do
     let(:update_params) do
       {
         country: 'pl',
+        default_currency: 'EUR',
         address_line1: 'address1',
         address_line2: 'address2',
         state: 'state',
@@ -21,6 +22,7 @@ RSpec.describe Api::V1::OrganizationsController, type: :request do
         timezone: 'Europe/Paris',
         webhook_url:,
         email_settings: ['invoice.finalized'],
+        document_number_prefix: 'ORG-2',
         billing_configuration: {
           invoice_footer: 'footer',
           invoice_grace_period: 3,
@@ -41,9 +43,12 @@ RSpec.describe Api::V1::OrganizationsController, type: :request do
 
       aggregate_failures do
         expect(json[:organization][:name]).to eq(organization.name)
+        expect(json[:organization][:default_currency]).to eq('EUR')
         expect(json[:organization][:webhook_url]).to eq(webhook_url)
         expect(json[:organization][:webhook_urls]).to eq([webhook_url])
         expect(json[:organization][:vat_rate]).to eq(update_params[:vat_rate])
+        expect(json[:organization][:document_numbering]).to eq('per_customer')
+        expect(json[:organization][:document_number_prefix]).to eq('ORG-2')
         # TODO(:timezone): Timezone update is turned off for now
         # expect(json[:organization][:timezone]).to eq(update_params[:timezone])
 

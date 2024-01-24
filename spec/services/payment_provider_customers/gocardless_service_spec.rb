@@ -83,6 +83,12 @@ RSpec.describe PaymentProviderCustomers::GocardlessService, type: :service do
     end
   end
 
+  describe '#update' do
+    it 'returns result' do
+      expect(gocardless_service.update).to be_a(BaseService::Result)
+    end
+  end
+
   describe '.generate_checkout_url' do
     before do
       allow(GoCardlessPro::Client).to receive(:new)
@@ -115,6 +121,24 @@ RSpec.describe PaymentProviderCustomers::GocardlessService, type: :service do
         expect(gocardless_billing_request_flow_service).to have_received(:create)
         expect(SendWebhookJob).to have_been_enqueued
           .with('customer.checkout_url_generated', customer, checkout_url: 'https://example.com')
+      end
+    end
+  end
+
+  describe '#success_redirect_url' do
+    subject(:success_redirect_url) { gocardless_service.__send__(:success_redirect_url) }
+
+    context 'when payment provider has success redirect url' do
+      it "returns payment provider's success redirect url" do
+        expect(success_redirect_url).to eq(gocardless_provider.success_redirect_url)
+      end
+    end
+
+    context 'when payment provider has no success redirect url' do
+      let(:gocardless_provider) { create(:gocardless_provider, success_redirect_url: nil) }
+
+      it 'returns the default success redirect url' do
+        expect(success_redirect_url).to eq(PaymentProviders::GocardlessProvider::SUCCESS_REDIRECT_URL)
       end
     end
   end

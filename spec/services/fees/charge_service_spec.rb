@@ -53,18 +53,18 @@ RSpec.describe Fees::ChargeService do
       it 'creates a fee' do
         result = charge_subscription_service.create
         expect(result).to be_success
-        created_fee = result.fees.first
-
-        aggregate_failures do
-          expect(created_fee.id).not_to be_nil
-          expect(created_fee.invoice_id).to eq(invoice.id)
-          expect(created_fee.charge_id).to eq(charge.id)
-          expect(created_fee.amount_cents).to eq(0)
-          expect(created_fee.amount_currency).to eq('EUR')
-          expect(created_fee.units).to eq(0)
-          expect(created_fee.events_count).to eq(0)
-          expect(created_fee.payment_status).to eq('pending')
-        end
+        expect(result.fees.first).to have_attributes(
+          id: String,
+          invoice_id: invoice.id,
+          charge_id: charge.id,
+          amount_cents: 0,
+          amount_currency: 'EUR',
+          units: 0,
+          unit_amount_cents: 0,
+          precise_unit_amount: 0,
+          events_count: 0,
+          payment_status: 'pending',
+        )
       end
 
       context 'with graduated charge model' do
@@ -102,16 +102,17 @@ RSpec.describe Fees::ChargeService do
         it 'creates a fee' do
           result = charge_subscription_service.create
           expect(result).to be_success
-          created_fee = result.fees.first
-
-          aggregate_failures do
-            expect(created_fee.id).not_to be_nil
-            expect(created_fee.invoice_id).to eq(invoice.id)
-            expect(created_fee.charge_id).to eq(charge.id)
-            expect(created_fee.amount_cents).to eq(5)
-            expect(created_fee.amount_currency).to eq('EUR')
-            expect(created_fee.units.to_s).to eq('4.0')
-          end
+          expect(result.fees.first).to have_attributes(
+            id: String,
+            invoice_id: invoice.id,
+            charge_id: charge.id,
+            amount_cents: 5,
+            amount_currency: 'EUR',
+            units: 4.0,
+            unit_amount_cents: 1,
+            precise_unit_amount: 0.0125,
+            events_count: 4,
+          )
         end
       end
 
@@ -160,21 +161,19 @@ RSpec.describe Fees::ChargeService do
         it 'creates a new fee for the complete period' do
           result = charge_subscription_service.create
           expect(result).to be_success
-          created_fee = result.fees.first
-
-          aggregate_failures do
-            expect(created_fee.id).not_to be_nil
-            expect(created_fee.invoice_id).to eq(invoice.id)
-            expect(created_fee.charge_id).to eq(charge.id)
-            expect(created_fee.amount_cents).to eq(2000)
-            expect(created_fee.amount_currency).to eq('EUR')
-            expect(created_fee.units).to eq(1)
-          end
+          expect(result.fees.first).to have_attributes(
+            id: String,
+            invoice_id: invoice.id,
+            charge_id: charge.id,
+            amount_cents: 2000,
+            amount_currency: 'EUR',
+            units: 1,
+          )
         end
       end
 
       context 'with all types of aggregation' do
-        BillableMetric::AGGREGATION_TYPES.each do |aggregation_type|
+        BillableMetric::AGGREGATION_TYPES.keys.each do |aggregation_type|
           before do
             billable_metric.update!(aggregation_type:, field_name: 'foo_bar', weighted_interval: 'seconds')
           end
@@ -182,16 +181,310 @@ RSpec.describe Fees::ChargeService do
           it 'creates fees' do
             result = charge_subscription_service.create
             expect(result).to be_success
-            created_fee = result.fees.first
+            expect(result.fees.first).to have_attributes(
+              id: String,
+              invoice_id: invoice.id,
+              charge_id: charge.id,
+              amount_cents: 0,
+              amount_currency: 'EUR',
+              units: 0,
+              unit_amount_cents: 0,
+              precise_unit_amount: 0,
+            )
+          end
+        end
+      end
 
-            aggregate_failures do
-              expect(created_fee.id).not_to be_nil
-              expect(created_fee.invoice_id).to eq(invoice.id)
-              expect(created_fee.charge_id).to eq(charge.id)
-              expect(created_fee.amount_cents).to eq(0)
-              expect(created_fee.amount_currency).to eq('EUR')
-              expect(created_fee.units).to eq(0)
+      context 'when there is adjusted fee' do
+        let(:adjusted_fee) do
+          create(
+            :adjusted_fee,
+            invoice:,
+            subscription:,
+            charge:,
+            properties:,
+            fee_type: :charge,
+            adjusted_units: true,
+            adjusted_amount: false,
+            units: 3,
+          )
+        end
+        let(:properties) do
+          {
+            charges_from_datetime: boundaries[:charges_from_datetime],
+            charges_to_datetime: boundaries[:charges_to_datetime],
+          }
+        end
+
+        before do
+          adjusted_fee
+          invoice.draft!
+        end
+
+        context 'with adjusted units' do
+          it 'creates a fee' do
+            result = charge_subscription_service.create
+
+            expect(result).to be_success
+            expect(result.fees.first).to have_attributes(
+              id: String,
+              invoice_id: invoice.id,
+              charge_id: charge.id,
+              amount_cents: 6_000,
+              amount_currency: 'EUR',
+              units: 3,
+              unit_amount_cents: 2_000,
+              precise_unit_amount: 20,
+              events_count: 0,
+              payment_status: 'pending',
+            )
+          end
+
+          context 'when there is true-up fee' do
+            before { charge.update!(min_amount_cents: 20_000) }
+
+            it 'creates two fees' do
+              result = charge_subscription_service.create
+
+              aggregate_failures do
+                expect(result).to be_success
+                expect(result.fees.count).to eq(2)
+                expect(result.fees.pluck(:amount_cents)).to contain_exactly(6_000, 4_967)
+                expect(result.fees.pluck(:unit_amount_cents)).to contain_exactly(2_000, 4_967)
+                expect(result.fees.pluck(:precise_unit_amount)).to contain_exactly(20, 49.67)
+              end
             end
+          end
+
+          context 'with standard charge, all types of aggregation and presence of groups' do
+            let(:europe) do
+              create(:group, billable_metric_id: billable_metric.id, key: 'region', value: 'europe')
+            end
+
+            let(:usa) do
+              create(:group, billable_metric_id: billable_metric.id, key: 'region', value: 'usa')
+            end
+
+            let(:france) do
+              create(:group, billable_metric_id: billable_metric.id, key: 'country', value: 'france')
+            end
+
+            let(:charge) do
+              create(
+                :standard_charge,
+                plan: subscription.plan,
+                billable_metric:,
+                properties: { amount: '10.12345' },
+                group_properties: [
+                  build(
+                    :group_property,
+                    group: europe,
+                    values: {
+                      amount: '20',
+                      amount_currency: 'EUR',
+                    },
+                  ),
+                  build(
+                    :group_property,
+                    group: usa,
+                    values: {
+                      amount: '50',
+                      amount_currency: 'EUR',
+                    },
+                  ),
+                ],
+              )
+            end
+
+            let(:adjusted_fee) do
+              create(
+                :adjusted_fee,
+                invoice:,
+                subscription:,
+                charge:,
+                group: usa,
+                properties:,
+                fee_type: :charge,
+                adjusted_units: true,
+                adjusted_amount: false,
+                units: 3,
+              )
+            end
+
+            before do
+              france
+
+              create(
+                :event,
+                organization: subscription.organization,
+                customer: subscription.customer,
+                subscription:,
+                code: charge.billable_metric.code,
+                timestamp: DateTime.parse('2022-03-16'),
+                properties: { region: 'usa', foo_bar: 12 },
+              )
+              create(
+                :event,
+                organization: subscription.organization,
+                customer: subscription.customer,
+                subscription:,
+                code: charge.billable_metric.code,
+                timestamp: DateTime.parse('2022-03-16'),
+                properties: { region: 'europe', foo_bar: 10 },
+              )
+              create(
+                :event,
+                organization: subscription.organization,
+                customer: subscription.customer,
+                subscription:,
+                code: charge.billable_metric.code,
+                timestamp: DateTime.parse('2022-03-16'),
+                properties: { region: 'europe', foo_bar: 5 },
+              )
+              create(
+                :event,
+                organization: subscription.organization,
+                customer: subscription.customer,
+                subscription:,
+                code: charge.billable_metric.code,
+                timestamp: DateTime.parse('2022-03-16'),
+                properties: { country: 'france', foo_bar: 5 },
+              )
+            end
+
+            it 'creates expected fees for sum_agg aggregation type' do
+              billable_metric.update!(aggregation_type: :sum_agg, field_name: 'foo_bar')
+              result = charge_subscription_service.create
+              expect(result).to be_success
+              created_fees = result.fees
+
+              aggregate_failures do
+                expect(created_fees.count).to eq(3)
+                expect(created_fees).to all(
+                  have_attributes(
+                    invoice_id: invoice.id,
+                    charge_id: charge.id,
+                    amount_currency: 'EUR',
+                  ),
+                )
+                expect(created_fees.first).to have_attributes(
+                  group: europe,
+                  amount_cents: 30_000,
+                  units: 15,
+                  unit_amount_cents: 2000,
+                  precise_unit_amount: 20,
+                )
+
+                expect(created_fees.second).to have_attributes(
+                  group: usa,
+                  amount_cents: 15_000,
+                  units: 3,
+                  unit_amount_cents: 5000,
+                  precise_unit_amount: 50,
+                )
+
+                expect(created_fees.third).to have_attributes(
+                  group: france,
+                  amount_cents: 5062,
+                  units: 5,
+                  unit_amount_cents: 1012,
+                  precise_unit_amount: 10.12345,
+                )
+              end
+            end
+          end
+        end
+
+        context 'with adjusted amount' do
+          let(:adjusted_fee) do
+            create(
+              :adjusted_fee,
+              invoice:,
+              subscription:,
+              charge:,
+              properties:,
+              fee_type: :charge,
+              adjusted_units: false,
+              adjusted_amount: true,
+              units: 4,
+              unit_amount_cents: 200,
+            )
+          end
+
+          it 'creates a fee' do
+            result = charge_subscription_service.create
+
+            expect(result).to be_success
+            expect(result.fees.first).to have_attributes(
+              id: String,
+              invoice_id: invoice.id,
+              charge_id: charge.id,
+              amount_cents: 800,
+              amount_currency: 'EUR',
+              units: 4,
+              unit_amount_cents: 200,
+              precise_unit_amount: 2,
+              events_count: 0,
+              payment_status: 'pending',
+            )
+          end
+        end
+
+        context 'with adjusted display name' do
+          let(:adjusted_fee) do
+            create(
+              :adjusted_fee,
+              invoice:,
+              subscription:,
+              charge:,
+              properties:,
+              fee_type: :charge,
+              adjusted_units: false,
+              adjusted_amount: false,
+              invoice_display_name: 'test123',
+              units: 3,
+            )
+          end
+
+          it 'creates a fee' do
+            result = charge_subscription_service.create
+
+            expect(result).to be_success
+            expect(result.fees.first).to have_attributes(
+              id: String,
+              invoice_id: invoice.id,
+              charge_id: charge.id,
+              amount_cents: 0,
+              amount_currency: 'EUR',
+              units: 0,
+              unit_amount_cents: 0,
+              precise_unit_amount: 0,
+              events_count: 0,
+              payment_status: 'pending',
+              invoice_display_name: 'test123',
+            )
+          end
+        end
+
+        context 'with invoice NOT in draft status' do
+          before { invoice.finalized! }
+
+          it 'creates a fee without using adjusted fee attributes' do
+            result = charge_subscription_service.create
+
+            expect(result).to be_success
+            expect(result.fees.first).to have_attributes(
+              id: String,
+              invoice_id: invoice.id,
+              charge_id: charge.id,
+              amount_cents: 0,
+              amount_currency: 'EUR',
+              units: 0,
+              unit_amount_cents: 0,
+              precise_unit_amount: 0,
+              events_count: 0,
+              payment_status: 'pending',
+            )
           end
         end
       end
@@ -206,6 +499,8 @@ RSpec.describe Fees::ChargeService do
               expect(result).to be_success
               expect(result.fees.count).to eq(2)
               expect(result.fees.pluck(:amount_cents)).to contain_exactly(0, 548) # 548 is 1000 prorated for 17 days.
+              expect(result.fees.pluck(:unit_amount_cents)).to contain_exactly(0, 548)
+              expect(result.fees.pluck(:precise_unit_amount)).to contain_exactly(0, 5.48)
             end
           end
         end
@@ -230,7 +525,7 @@ RSpec.describe Fees::ChargeService do
           :standard_charge,
           plan: subscription.plan,
           billable_metric:,
-          properties: { amount: '10' },
+          properties: { amount: '10.12345' },
           group_properties: [
             build(
               :group_property,
@@ -312,18 +607,24 @@ RSpec.describe Fees::ChargeService do
             group: europe,
             amount_cents: 4000,
             units: 2,
+            unit_amount_cents: 2000,
+            precise_unit_amount: 20,
           )
 
           expect(created_fees.second).to have_attributes(
             group: usa,
             amount_cents: 5000,
             units: 1,
+            unit_amount_cents: 5000,
+            precise_unit_amount: 50,
           )
 
           expect(created_fees.third).to have_attributes(
             group: france,
-            amount_cents: 1000,
+            amount_cents: 1012,
             units: 1,
+            unit_amount_cents: 1012,
+            precise_unit_amount: 10.12345,
           )
         end
       end
@@ -347,18 +648,24 @@ RSpec.describe Fees::ChargeService do
             group: europe,
             amount_cents: 30_000,
             units: 15,
+            unit_amount_cents: 2000,
+            precise_unit_amount: 20,
           )
 
           expect(created_fees.second).to have_attributes(
             group: usa,
             amount_cents: 60_000,
             units: 12,
+            unit_amount_cents: 5000,
+            precise_unit_amount: 50,
           )
 
           expect(created_fees.third).to have_attributes(
             group: france,
-            amount_cents: 5000,
+            amount_cents: 5062,
             units: 5,
+            unit_amount_cents: 1012,
+            precise_unit_amount: 10.12345,
           )
         end
       end
@@ -382,18 +689,24 @@ RSpec.describe Fees::ChargeService do
             group: europe,
             amount_cents: 20_000,
             units: 10,
+            unit_amount_cents: 2000,
+            precise_unit_amount: 20,
           )
 
           expect(created_fees.second).to have_attributes(
             group: usa,
             amount_cents: 60_000,
             units: 12,
+            unit_amount_cents: 5000,
+            precise_unit_amount: 50,
           )
 
           expect(created_fees.third).to have_attributes(
             group: france,
-            amount_cents: 5000,
+            amount_cents: 5062,
             units: 5,
+            unit_amount_cents: 1012,
+            precise_unit_amount: 10.12345,
           )
         end
       end
@@ -402,70 +715,73 @@ RSpec.describe Fees::ChargeService do
         let(:event1) do
           create(
             :event,
+            organization_id: organization.id,
             code: charge.billable_metric.code,
-            customer: subscription.customer,
-            subscription:,
+            external_customer_id: subscription.customer.external_id,
+            external_subscription_id: subscription.external_id,
             timestamp: DateTime.parse('2022-03-16'),
-            quantified_event: quantified_event1,
-            properties: { region: 'usa', foo_bar: 12 },
+            properties: { region: 'usa', foo_bar: quantified_event1.external_id },
           )
         end
         let(:quantified_event1) do
           create(
             :quantified_event,
-            customer: subscription.customer,
+            organization_id: organization.id,
             added_at: DateTime.parse('2022-03-16'),
             removed_at: nil,
             external_id: '12',
             external_subscription_id: subscription.external_id,
             billable_metric: charge.billable_metric,
             properties: { region: 'usa', foo_bar: 12 },
+            group: usa,
           )
         end
         let(:event2) do
           create(
             :event,
+            organization_id: organization.id,
             code: charge.billable_metric.code,
-            customer: subscription.customer,
-            subscription:,
+            external_customer_id: subscription.customer.external_id,
+            external_subscription_id: subscription.external_id,
             timestamp: DateTime.parse('2022-03-16'),
-            quantified_event: quantified_event2,
-            properties: { region: 'europe', foo_bar: 10 },
+            properties: { region: 'europe', foo_bar: quantified_event2.external_id },
           )
         end
         let(:quantified_event2) do
           create(
             :quantified_event,
-            customer: subscription.customer,
+            organization_id: organization.id,
             added_at: DateTime.parse('2022-03-16'),
             removed_at: nil,
             external_id: '10',
             external_subscription_id: subscription.external_id,
             billable_metric: charge.billable_metric,
             properties: { region: 'europe', foo_bar: 10 },
+            group: europe,
           )
         end
         let(:event3) do
           create(
             :event,
+            organization_id: organization.id,
             code: charge.billable_metric.code,
-            customer: subscription.customer,
-            subscription:,
+            external_customer_id: subscription.customer.external_id,
+            external_subscription_id: subscription.external_id,
             timestamp: DateTime.parse('2022-03-16'),
-            quantified_event: quantified_event3,
-            properties: { country: 'france', foo_bar: 5 },
+            properties: { country: 'france', foo_bar: quantified_event3.external_id },
           )
         end
         let(:quantified_event3) do
           create(
             :quantified_event,
-            customer: subscription.customer,
+            organization_id: organization.id,
             added_at: DateTime.parse('2022-03-16'),
             removed_at: nil,
             external_id: '5',
             external_subscription_id: subscription.external_id,
             billable_metric: charge.billable_metric,
             properties: { country: 'france', foo_bar: 5 },
+            group: france,
           )
         end
 
@@ -504,98 +820,12 @@ RSpec.describe Fees::ChargeService do
 
             expect(created_fees.third).to have_attributes(
               group: france,
-              amount_cents: 1000,
+              amount_cents: 1012,
               units: 1,
+              unit_amount_cents: 1012,
+              precise_unit_amount: 10.12345,
             )
           end
-        end
-      end
-
-      it 'creates expected fees for recurring_count_agg aggregation type' do
-        from_datetime = subscription.started_at.at_beginning_of_month.next_month.beginning_of_day
-        to_datetime = subscription.started_at.next_month.end_of_month.end_of_day
-        boundaries = {
-          from_datetime:,
-          to_datetime:,
-          charges_from_datetime: from_datetime,
-          charges_to_datetime: to_datetime,
-          charges_duration: (to_datetime - from_datetime).fdiv(1.day).ceil,
-        }
-
-        create(
-          :quantified_event,
-          customer: subscription.customer,
-          billable_metric:,
-          external_subscription_id: subscription.external_id,
-          external_id: 'ext_11',
-          added_at: subscription.started_at - 1.day,
-          properties: {
-            'operation_type' => 'add',
-            'unique_id' => 'ext_123',
-            'region' => 'usa',
-            'foo_bar' => 12,
-          },
-        )
-        create(
-          :quantified_event,
-          customer: subscription.customer,
-          billable_metric:,
-          external_subscription_id: subscription.external_id,
-          external_id: 'ext_12',
-          added_at: subscription.started_at - 1.day,
-          properties: {
-            'operation_type' => 'add',
-            'unique_id' => 'ext_456',
-            'region' => 'europe',
-            'foo_bar' => 10,
-          },
-        )
-        create(
-          :quantified_event,
-          customer: subscription.customer,
-          billable_metric:,
-          external_subscription_id: subscription.external_id,
-          external_id: 'ext_13',
-          added_at: subscription.started_at - 1.day,
-          properties: {
-            'operation_type' => 'add',
-            'unique_id' => 'ext_789',
-            'country' => 'france',
-            'foo_bar' => 5,
-          },
-        )
-
-        billable_metric.update!(aggregation_type: :recurring_count_agg, field_name: 'foo_bar')
-        result = described_class.new(invoice:, charge:, subscription:, boundaries:).create
-        expect(result).to be_success
-        created_fees = result.fees
-
-        aggregate_failures do
-          expect(created_fees.count).to eq(3)
-          expect(created_fees).to all(
-            have_attributes(
-              invoice_id: invoice.id,
-              charge_id: charge.id,
-              amount_currency: 'EUR',
-            ),
-          )
-          expect(created_fees.first).to have_attributes(
-            group: europe,
-            amount_cents: 2000,
-            units: 1,
-          )
-
-          expect(created_fees.second).to have_attributes(
-            group: usa,
-            amount_cents: 5000,
-            units: 1,
-          )
-
-          expect(created_fees.third).to have_attributes(
-            group: france,
-            amount_cents: 1000,
-            units: 1,
-          )
         end
       end
     end
@@ -707,18 +937,25 @@ RSpec.describe Fees::ChargeService do
           expect(created_fees.first).to have_attributes(
             group: europe,
             units: 2,
+            amount_cents: 10_000,
+            unit_amount_cents: 10_000,
+            precise_unit_amount: 100,
           )
 
           expect(created_fees.second).to have_attributes(
             group: usa,
             amount_cents: 5000,
             units: 1,
+            unit_amount_cents: 5000,
+            precise_unit_amount: 50,
           )
 
           expect(created_fees.third).to have_attributes(
             group: france,
             amount_cents: 0,
             units: 1,
+            unit_amount_cents: 0,
+            precise_unit_amount: 0,
           )
         end
       end
@@ -820,18 +1057,24 @@ RSpec.describe Fees::ChargeService do
             group: europe,
             amount_cents: 200 + 2 * 2,
             units: 2,
+            unit_amount_cents: 102,
+            precise_unit_amount: 1.02,
           )
 
           expect(created_fees.second).to have_attributes(
             group: usa,
             amount_cents: 1 * 1,
             units: 1,
+            unit_amount_cents: 1,
+            precise_unit_amount: 0.01,
           )
 
           expect(created_fees.third).to have_attributes(
             group: france,
             amount_cents: 100 + 5 * 1,
             units: 1,
+            unit_amount_cents: 105,
+            precise_unit_amount: 1.05,
           )
         end
       end
@@ -933,12 +1176,16 @@ RSpec.describe Fees::ChargeService do
             group: europe,
             amount_cents: 3,
             units: 2,
+            unit_amount_cents: 1,
+            precise_unit_amount: 0.015,
           )
 
           expect(created_fees.second).to have_attributes(
             group: usa,
             amount_cents: 4,
             units: 1,
+            unit_amount_cents: 4,
+            precise_unit_amount: 0.04,
           )
         end
       end
@@ -1030,12 +1277,16 @@ RSpec.describe Fees::ChargeService do
             group: europe,
             amount_cents: 1400,
             units: 2,
+            unit_amount_cents: 700,
+            precise_unit_amount: 7,
           )
 
           expect(created_fees.second).to have_attributes(
             group: usa,
             amount_cents: 1100,
             units: 1,
+            unit_amount_cents: 1100,
+            precise_unit_amount: 11,
           )
         end
       end
@@ -1137,12 +1388,16 @@ RSpec.describe Fees::ChargeService do
             group: europe,
             amount_cents: 5, # 2 × 0.02 + 0.01
             units: 2,
+            unit_amount_cents: 2,
+            precise_unit_amount: 0.025,
           )
 
           expect(created_fees.second).to have_attributes(
             group: usa,
             amount_cents: 4, # 1 × 0.03 + 0.01
             units: 1,
+            unit_amount_cents: 4,
+            precise_unit_amount: 0.04,
           )
         end
       end
@@ -1218,7 +1473,7 @@ RSpec.describe Fees::ChargeService do
           expect(created_fee.payment_status).to eq('pending')
 
           expect(quantified_event.id).not_to be_nil
-          expect(quantified_event.customer_id).to eq(customer.id)
+          expect(quantified_event.organization).to eq(organization)
           expect(quantified_event.external_subscription_id).to eq(subscription.external_id)
           expect(quantified_event.external_id).to be_nil
           expect(quantified_event.group_id).to be_nil
@@ -1263,7 +1518,7 @@ RSpec.describe Fees::ChargeService do
 
   describe '.current_usage' do
     context 'with all types of aggregation' do
-      BillableMetric::AGGREGATION_TYPES.each do |aggregation_type|
+      BillableMetric::AGGREGATION_TYPES.keys.each do |aggregation_type|
         before do
           billable_metric.update!(aggregation_type:, field_name: 'foo_bar', weighted_interval: 'seconds')
 

@@ -9,6 +9,7 @@ class Invoice < ApplicationRecord
   CREDIT_NOTES_MIN_VERSION = 2
   COUPON_BEFORE_VAT_VERSION = 3
 
+  before_save :ensure_organization_sequential_id, if: -> { organization.per_organization? }
   before_save :ensure_number
 
   belongs_to :customer, -> { with_discarded }
@@ -48,13 +49,14 @@ class Invoice < ApplicationRecord
 
   INVOICE_TYPES = %i[subscription add_on credit one_off].freeze
   PAYMENT_STATUS = %i[pending succeeded failed].freeze
-  STATUS = %i[draft finalized voided].freeze
+  STATUS = %i[draft finalized voided generating].freeze
 
   enum invoice_type: INVOICE_TYPES
   enum payment_status: PAYMENT_STATUS
   enum status: STATUS
 
   aasm column: 'status', timestamps: true do
+    state :generating
     state :draft
     state :finalized
     state :voided
@@ -68,8 +70,10 @@ class Invoice < ApplicationRecord
     end
   end
 
-  sequenced scope: ->(invoice) { invoice.customer.invoices }
+  sequenced scope: ->(invoice) { invoice.customer.invoices },
+            lock_key: ->(invoice) { invoice.customer_id }
 
+  scope :ready_to_be_refreshed, -> { where(ready_to_be_refreshed: true) }
   scope :ready_to_be_finalized,
         lambda {
           date = <<-SQL
@@ -103,7 +107,12 @@ class Invoice < ApplicationRecord
   def file_url
     return if file.blank?
 
-    Rails.application.routes.url_helpers.rails_blob_url(file, host: ENV['LAGO_API_URL'])
+    blob_path = Rails.application.routes.url_helpers.rails_blob_path(
+      file,
+      host: 'void',
+    )
+
+    File.join(ENV['LAGO_API_URL'], blob_path)
   end
 
   def fee_total_amount_cents
@@ -144,16 +153,17 @@ class Invoice < ApplicationRecord
                 BillableMetrics::Breakdown::UniqueCountService
               else
                 raise(NotImplementedError)
-              end
+    end
 
     service.new(
-      billable_metric: fee.charge.billable_metric,
+      event_store_class: Events::Stores::PostgresStore,
+      charge: fee.charge,
       subscription: fee.subscription,
-      group: fee.group,
       boundaries: {
         from_datetime: DateTime.parse(fee.properties['charges_from_datetime']),
         to_datetime: DateTime.parse(fee.properties['charges_to_datetime']),
       },
+      filters: { group: fee.group },
     ).breakdown.breakdown
   end
 
@@ -168,10 +178,11 @@ class Invoice < ApplicationRecord
 
     return {} unless event
 
-    number_of_seconds = date_service.charges_to_datetime.in_time_zone(customer.applicable_timezone) -
-                        event.timestamp.in_time_zone(customer.applicable_timezone)
-
-    number_of_days = number_of_seconds.fdiv(1.day).ceil
+    number_of_days = Utils::DatetimeService.date_diff_with_timezone(
+      event.timestamp,
+      date_service.charges_to_datetime,
+      customer.applicable_timezone,
+    )
 
     {
       number_of_days:,
@@ -231,6 +242,15 @@ class Invoice < ApplicationRecord
     finalized? && (pending? || failed?)
   end
 
+  def different_boundaries_for_subscription_and_charges(subscription)
+    subscription_from = invoice_subscription(subscription.id).from_datetime_in_customer_timezone&.to_date
+    subscription_to = invoice_subscription(subscription.id).to_datetime_in_customer_timezone&.to_date
+    charges_from = invoice_subscription(subscription.id).charges_from_datetime_in_customer_timezone&.to_date
+    charges_to = invoice_subscription(subscription.id).charges_to_datetime_in_customer_timezone&.to_date
+
+    subscription_from != charges_from && subscription_to != charges_to
+  end
+
   private
 
   def void_invoice!
@@ -240,8 +260,51 @@ class Invoice < ApplicationRecord
   def ensure_number
     return if number.present?
 
-    formatted_sequential_id = format('%03d', sequential_id)
+    if organization.per_customer?
+      # NOTE: Example of expected customer slug format is ORG_PREFIX-005
+      customer_slug = "#{organization.document_number_prefix}-#{format('%03d', customer.sequential_id)}"
+      formatted_sequential_id = format('%03d', sequential_id)
 
-    self.number = "#{customer.slug}-#{formatted_sequential_id}"
+      self.number = "#{customer_slug}-#{formatted_sequential_id}"
+    else
+      org_formatted_sequential_id = format('%03d', organization_sequential_id)
+      formatted_year_and_month = Time.now.utc.strftime('%Y%m')
+
+      self.number = "#{organization.document_number_prefix}-#{formatted_year_and_month}-#{org_formatted_sequential_id}"
+    end
+  end
+
+  def ensure_organization_sequential_id
+    return if organization_sequential_id.present? && organization_sequential_id.positive?
+
+    self.organization_sequential_id = generate_organization_sequential_id
+  end
+
+  def generate_organization_sequential_id
+    organization_sequence_scope = organization.invoices.where(
+      "date_trunc('month', created_at)::date = ?",
+      Time.now.utc.beginning_of_month.to_date,
+    )
+
+    result = Invoice.with_advisory_lock(
+      organization_id,
+      transaction: true,
+      timeout_seconds: 10.seconds,
+    ) do
+      organization_sequential_id = organization_sequence_scope.count
+      organization_sequential_id ||= 0
+
+      # NOTE: Start with the most recent sequential id and find first available sequential id that haven't occurred
+      loop do
+        organization_sequential_id += 1
+
+        break organization_sequential_id unless organization_sequence_scope.exists?(organization_sequential_id:)
+      end
+    end
+
+    # NOTE: If the application was unable to acquire the lock, the block returns false
+    raise(SequenceError, 'Unable to acquire lock on the database') unless result
+
+    result
   end
 end

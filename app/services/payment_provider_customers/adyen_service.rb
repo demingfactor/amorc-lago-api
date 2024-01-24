@@ -2,6 +2,9 @@
 
 module PaymentProviderCustomers
   class AdyenService < BaseService
+    include Lago::Adyen::ErrorHandlable
+    include Customers::PaymentProviderFinder
+
     def initialize(adyen_customer = nil)
       @adyen_customer = adyen_customer
 
@@ -12,23 +15,35 @@ module PaymentProviderCustomers
       result.adyen_customer = adyen_customer
       return result if adyen_customer.provider_customer_id?
 
-      result.checkout_url = generate_checkout_url.checkout_url
+      checkout_url_result = generate_checkout_url
+      return result unless checkout_url_result.success?
+
+      result.checkout_url = checkout_url_result.checkout_url
       result
     end
 
-    def generate_checkout_url
+    def update
+      result
+    end
+
+    def generate_checkout_url(send_webhook: true)
       return result.not_found_failure!(resource: 'adyen_payment_provider') unless adyen_payment_provider
 
-      res = client.checkout.payment_links_api.payment_links(payment_link_params)
-      checkout_url = res.response['url']
+      res = client.checkout.payment_links_api.payment_links(Lago::Adyen::Params.new(payment_link_params).to_h)
+      handle_adyen_response(res)
 
-      SendWebhookJob.perform_later(
-        'customer.checkout_url_generated',
-        customer,
-        checkout_url:,
-      )
+      return result unless result.success?
 
-      result.checkout_url = checkout_url
+      result.checkout_url = res.response['url']
+
+      if send_webhook
+        SendWebhookJob.perform_later(
+          'customer.checkout_url_generated',
+          customer,
+          checkout_url: result.checkout_url,
+        )
+      end
+
       result
     rescue Adyen::AdyenError => e
       deliver_error_webhook(e)
@@ -49,7 +64,10 @@ module PaymentProviderCustomers
 
       if event['success'] == 'true'
         adyen_customer.update!(payment_method_id:, provider_customer_id: shopper_reference)
-        SendWebhookJob.perform_later('customer.payment_provider_created', customer) if organization.webhook_endpoints.any?
+
+        if organization.webhook_endpoints.any?
+          SendWebhookJob.perform_later('customer.payment_provider_created', customer)
+        end
       else
         deliver_error_webhook(Adyen::AdyenError.new(nil, nil, event['reason'], event['eventCode']))
       end
@@ -69,7 +87,7 @@ module PaymentProviderCustomers
     end
 
     def adyen_payment_provider
-      @adyen_payment_provider || organization.adyen_payment_provider
+      @adyen_payment_provider ||= payment_provider(customer)
     end
 
     def client
@@ -93,6 +111,7 @@ module PaymentProviderCustomers
           currency: customer.currency.presence || 'USD',
         },
         merchantAccount: adyen_payment_provider.merchant_account,
+        returnUrl: success_redirect_url,
         shopperReference: customer.external_id,
         storePaymentMethodMode: 'enabled',
         recurringProcessingModel: 'UnscheduledCardOnFile',
@@ -100,6 +119,10 @@ module PaymentProviderCustomers
       }
       prms[:shopperEmail] = customer.email if customer.email
       prms
+    end
+
+    def success_redirect_url
+      adyen_payment_provider.success_redirect_url.presence || PaymentProviders::AdyenProvider::SUCCESS_REDIRECT_URL
     end
 
     def deliver_error_webhook(adyen_error)

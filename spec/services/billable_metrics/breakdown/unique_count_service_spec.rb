@@ -5,15 +5,20 @@ require 'rails_helper'
 RSpec.describe BillableMetrics::Breakdown::UniqueCountService, type: :service do
   subject(:service) do
     described_class.new(
-      billable_metric:,
+      event_store_class:,
+      charge:,
       subscription:,
-      group:,
       boundaries: {
         from_datetime:,
         to_datetime:,
       },
+      filters: {
+        group:,
+      },
     )
   end
+
+  let(:event_store_class) { Events::Stores::PostgresStore }
 
   let(:subscription) do
     create(
@@ -39,6 +44,13 @@ RSpec.describe BillableMetrics::Breakdown::UniqueCountService, type: :service do
     )
   end
 
+  let(:charge) do
+    create(
+      :standard_charge,
+      billable_metric:,
+    )
+  end
+
   let(:from_datetime) { DateTime.parse('2022-07-09 00:00:00 UTC') }
   let(:to_datetime) { DateTime.parse('2022-08-08 23:59:59 UTC') }
 
@@ -47,7 +59,6 @@ RSpec.describe BillableMetrics::Breakdown::UniqueCountService, type: :service do
   let(:quantified_event) do
     create(
       :quantified_event,
-      customer:,
       added_at:,
       removed_at:,
       external_subscription_id: subscription.external_id,

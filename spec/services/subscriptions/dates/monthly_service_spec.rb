@@ -158,6 +158,15 @@ RSpec.describe Subscriptions::Dates::MonthlyService, type: :service do
         it 'returns the day current billing day' do
           expect(result).to eq('2021-03-31 00:00:00 UTC')
         end
+
+        context 'when subscription month is shorter than billing one' do
+          let(:billing_at) { DateTime.parse('30 mar 2020') }
+          let(:subscription_at) { DateTime.parse('30 apr 2019') }
+
+          it 'returns the current billing day' do
+            expect(result).to eq('2020-02-29 00:00:00 UTC')
+          end
+        end
       end
     end
   end
@@ -231,10 +240,18 @@ RSpec.describe Subscriptions::Dates::MonthlyService, type: :service do
 
       context 'when billing subscription day does not exist in the month' do
         let(:subscription_at) { DateTime.parse('31 Jan 2022') }
-        let(:billing_at) { DateTime.parse('01 Mar 2022') }
+        let(:billing_at) { DateTime.parse('28 Feb 2022') }
 
         it 'returns the last day of the month' do
-          expect(result).to eq('2022-02-28 23:59:59 UTC')
+          expect(result).to eq('2022-02-27 23:59:59 UTC')
+        end
+
+        context 'when subscription is not the last day of the month' do
+          let(:subscription_at) { DateTime.parse('30 Jan 2022') }
+
+          it 'returns the last day of the month' do
+            expect(result).to eq('2022-02-27 23:59:59 UTC')
+          end
         end
       end
 
@@ -308,6 +325,18 @@ RSpec.describe Subscriptions::Dates::MonthlyService, type: :service do
 
           it 'takes previous invoice into account' do
             expect(result).to match_datetime('2022-02-01 00:00:00')
+          end
+        end
+
+        context 'when timezone has changed and there are no invoices generated in the past' do
+          let(:billing_at) { DateTime.parse('02 Mar 2022') }
+
+          before do
+            subscription.customer.update!(timezone: 'America/Los_Angeles')
+          end
+
+          it 'takes calculates correct datetime' do
+            expect(result).to eq(date_service.from_datetime.to_s)
           end
         end
       end

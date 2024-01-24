@@ -68,6 +68,8 @@ RSpec.describe Fees::CreateTrueUpService, type: :service do
             events_count: 0,
             group: nil,
             amount_cents: 300,
+            unit_amount_cents: 300,
+            precise_unit_amount: 3,
             true_up_parent_fee_id: fee.id,
           )
         end
@@ -127,6 +129,8 @@ RSpec.describe Fees::CreateTrueUpService, type: :service do
               events_count: 0,
               group: nil,
               amount_cents: 300,
+              unit_amount_cents: 300,
+              precise_unit_amount: 3,
               true_up_parent_fee_id: fee.id,
             )
           end

@@ -9,7 +9,7 @@ module Api
           organization_id: current_organization.id,
         )
 
-        plan = Plan.find_by(
+        plan = Plan.parents.find_by(
           code: create_params[:plan_code],
           organization_id: current_organization.id,
         )
@@ -49,8 +49,21 @@ module Api
       end
 
       def update
+        query = current_organization.subscriptions
+          .where(external_id: params[:external_id])
+          .order(subscription_at: :desc)
+        subscription = if query.count > 1
+          if params[:status] == 'pending'
+            query.pending
+          else
+            query.active
+          end
+        else
+          query
+        end.first
+
         result = Subscriptions::UpdateService.call(
-          subscription: current_organization.subscriptions.find_by(external_id: params[:external_id]),
+          subscription:,
           params: SubscriptionLegacyInput.new(
             current_organization,
             update_params,
@@ -137,10 +150,17 @@ module Api
           {
             charges: [
               :id,
+              :billable_metric_id,
               :min_amount_cents,
               :invoice_display_name,
               { properties: {} },
-              { group_properties: [] },
+              {
+                group_properties: [
+                  :group_id,
+                  { values: {} },
+                  :invoice_display_name,
+                ],
+              },
               { tax_codes: [] },
             ],
           },

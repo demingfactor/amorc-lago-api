@@ -8,11 +8,12 @@ RSpec.describe Customers::UpdateService, type: :service do
   let(:user) { nil }
   let(:membership) { create(:membership) }
   let(:organization) { membership.organization }
+  let(:payment_provider_code) { 'stripe_1' }
 
   describe 'update' do
     let(:user) { membership.user }
 
-    let(:customer) { create(:customer, organization:) }
+    let(:customer) { create(:customer, organization:, payment_provider: 'stripe', payment_provider_code:) }
     let(:external_id) { SecureRandom.uuid }
 
     let(:update_args) do
@@ -184,7 +185,17 @@ RSpec.describe Customers::UpdateService, type: :service do
           name: 'Updated customer name',
           external_id:,
           payment_provider: 'stripe',
+          payment_provider_code:,
         }
+      end
+
+      before do
+        create(:stripe_provider, organization: customer.organization, code: payment_provider_code)
+
+        allow(PaymentProviderCustomers::UpdateService)
+          .to receive(:call)
+          .with(customer)
+          .and_return(BaseService::Result.new)
       end
 
       it 'creates a payment provider customer' do
@@ -199,6 +210,11 @@ RSpec.describe Customers::UpdateService, type: :service do
         end
       end
 
+      it 'does not call payment provider customer update service' do
+        customers_service.update(**update_args)
+        expect(PaymentProviderCustomers::UpdateService).not_to have_received(:call).with(customer)
+      end
+
       context 'with provider customer id' do
         let(:update_args) do
           {
@@ -209,6 +225,11 @@ RSpec.describe Customers::UpdateService, type: :service do
             payment_provider: 'stripe',
             provider_customer: { provider_customer_id: 'cus_12345' },
           }
+        end
+
+        it 'calls payment provider customer update service' do
+          customers_service.update(**update_args)
+          expect(PaymentProviderCustomers::UpdateService).to have_received(:call).with(customer)
         end
 
         it 'creates a payment provider customer' do
@@ -298,6 +319,29 @@ RSpec.describe Customers::UpdateService, type: :service do
         aggregate_failures do
           expect(result).to be_success
           expect(result.customer.invoices.draft.pluck(:net_payment_term)).to eq([8, 8])
+        end
+      end
+    end
+
+    context 'when organization has eu tax management' do
+      let(:eu_auto_tax_service) { instance_double(Customers::EuAutoTaxesService) }
+
+      before do
+        create(:tax, organization:, code: 'lago_eu_fr_standard', rate: 20.0)
+        organization.update(eu_tax_management: true)
+
+        allow(Customers::EuAutoTaxesService).to receive(:new).and_return(eu_auto_tax_service)
+        allow(eu_auto_tax_service).to receive(:call).and_return('lago_eu_fr_standard')
+      end
+
+      it 'assigns the right tax to the customer' do
+        result = customers_service.update(**update_args)
+
+        aggregate_failures do
+          expect(result).to be_success
+
+          tax = result.customer.taxes.first
+          expect(tax.code).to eq('lago_eu_fr_standard')
         end
       end
     end

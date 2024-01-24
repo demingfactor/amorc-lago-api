@@ -2,6 +2,8 @@
 
 module Customers
   class CreateService < BaseService
+    include Customers::PaymentProviderFinder
+
     def create_from_api(organization:, params:)
       customer = organization.customers.find_or_initialize_by(external_id: params[:external_id])
       new_customer = customer.new_record?
@@ -47,7 +49,14 @@ module Customers
         ActiveRecord::Base.transaction do
           customer.save!
 
-          if params[:tax_codes]
+          if customer.organization.eu_tax_management
+            eu_tax_code = Customers::EuAutoTaxesService.call(customer:)
+
+            params[:tax_codes] ||= []
+            params[:tax_codes] = (params[:tax_codes] + [eu_tax_code]).uniq
+          end
+
+          if params[:tax_codes].present?
             taxes_result = Customers::ApplyTaxesService.call(customer:, tax_codes: params[:tax_codes])
             taxes_result.raise_if_error!
           end
@@ -66,6 +75,8 @@ module Customers
       result.customer = customer.reload
       track_customer_created(customer)
       result
+    rescue BaseService::ServiceFailure => e
+      result.single_validation_failure!(error_code: e.code)
     rescue ActiveRecord::RecordInvalid => e
       result.record_validation_failure!(record: e.record)
     rescue BaseService::FailedResult => e
@@ -102,6 +113,7 @@ module Customers
         external_salesforce_id: args[:external_salesforce_id],
         vat_rate: args[:vat_rate],
         payment_provider: args[:payment_provider],
+        payment_provider_code: args[:payment_provider_code],
         currency: args[:currency],
         document_locale: billing_configuration[:document_locale],
         tax_identification_number: args[:tax_identification_number],
@@ -112,7 +124,14 @@ module Customers
       ActiveRecord::Base.transaction do
         customer.save!
 
-        if args[:tax_codes]
+        if customer.organization.eu_tax_management
+          eu_tax_code = Customers::EuAutoTaxesService.call(customer:)
+
+          args[:tax_codes] ||= []
+          args[:tax_codes] = (args[:tax_codes] + [eu_tax_code]).uniq
+        end
+
+        if args[:tax_codes].present?
           taxes_result = Customers::ApplyTaxesService.call(customer:, tax_codes: args[:tax_codes])
           taxes_result.raise_if_error!
         end
@@ -121,7 +140,10 @@ module Customers
       end
 
       # NOTE: handle configuration for configured payment providers
-      billing_configuration = args[:provider_customer]&.to_h&.merge(payment_provider: args[:payment_provider])
+      billing_configuration = args[:provider_customer]&.to_h&.merge(
+        payment_provider: args[:payment_provider],
+        payment_provider_code: args[:payment_provider_code],
+      )
       create_billing_configuration(customer, billing_configuration)
 
       result.customer = customer
@@ -156,19 +178,31 @@ module Customers
     end
 
     def create_billing_configuration(customer, billing_configuration = {})
-      return if billing_configuration.blank?
+      return if billing_configuration.blank? || (api_context? && billing_configuration[:payment_provider].nil?)
 
       create_provider_customer = billing_configuration[:sync_with_provider]
       create_provider_customer ||= billing_configuration[:provider_customer_id]
       return unless create_provider_customer
 
-      customer.update!(payment_provider: billing_configuration[:payment_provider]) if api_context?
+      if api_context?
+        customer.payment_provider = billing_configuration[:payment_provider]
+
+        payment_provider_result = PaymentProviders::FindService.new(
+          organization_id: customer.organization_id,
+          code: billing_configuration[:payment_provider_code].presence,
+          payment_provider_type: customer.payment_provider,
+        ).call
+        payment_provider_result.raise_if_error!
+
+        customer.payment_provider_code = payment_provider_result.payment_provider.code
+        customer.save!
+      end
 
       create_or_update_provider_customer(customer, billing_configuration)
     end
 
     def handle_api_billing_configuration(customer, params, new_customer)
-      return unless params.key?(:billing_configuration)
+      params[:billing_configuration] = {} unless params.key?(:billing_configuration)
 
       billing = params[:billing_configuration]
 
@@ -181,7 +215,7 @@ module Customers
 
       customer.document_locale = billing[:document_locale] if billing.key?(:document_locale)
 
-      if new_customer
+      if new_customer || should_create_billing_configuration?(billing, customer)
         create_billing_configuration(customer, billing)
         customer.save!
         return
@@ -201,9 +235,13 @@ module Customers
       update_provider_customer = (billing || {})[:provider_customer_id].present?
       update_provider_customer ||= customer.provider_customer&.provider_customer_id.present?
 
-      return unless billing.key?(:payment_provider) && update_provider_customer
+      return unless update_provider_customer
 
-      create_or_update_provider_customer(customer, billing)
+      if customer.provider_customer&.provider_customer_id
+        PaymentProviderCustomers::UpdateService.call(customer)
+      else
+        create_or_update_provider_customer(customer, billing)
+      end
     end
 
     def create_or_update_provider_customer(customer, billing_configuration = {})
@@ -218,7 +256,7 @@ module Customers
 
       create_result = PaymentProviderCustomers::CreateService.new(customer).create_or_update(
         customer_class: provider_class,
-        payment_provider_id: customer.organization.payment_provider(billing_configuration[:payment_provider])&.id,
+        payment_provider_id: payment_provider(customer)&.id,
         params: billing_configuration,
         async: !(billing_configuration || {})[:sync],
       )
@@ -258,6 +296,10 @@ module Customers
         .find_or_create_by!(code: "tax_#{vat_rate}")
 
       Customers::ApplyTaxesService.call(customer:, tax_codes: [tax.code])
+    end
+
+    def should_create_billing_configuration?(billing, customer)
+      billing[:sync_with_provider] && customer.provider_customer&.provider_customer_id.nil?
     end
   end
 end

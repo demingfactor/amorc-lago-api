@@ -9,10 +9,8 @@ module PaymentProviderCustomers
     end
 
     def create_or_update(customer_class:, payment_provider_id:, params:, async: true)
-      provider_customer = customer_class.find_or_initialize_by(
-        customer_id: customer.id,
-        payment_provider_id:,
-      )
+      provider_customer = customer_class.find_by(customer_id: customer.id)
+      provider_customer ||= customer_class.new(customer_id: customer.id, payment_provider_id:)
 
       if (params || {}).key?(:provider_customer_id)
         provider_customer.provider_customer_id = params[:provider_customer_id].presence
@@ -89,10 +87,10 @@ module PaymentProviderCustomers
     end
 
     def should_generate_checkout_url?
-      result.provider_customer.provider_customer_id? && result.provider_customer.sync_with_provider.blank?
-    end
-
-    def assign_provider_payment_methods()
+      !result.provider_customer.id_previously_changed?(from: nil) && # it was not created but updated
+        result.provider_customer.provider_customer_id_previously_changed? &&
+        result.provider_customer.provider_customer_id? &&
+        result.provider_customer.sync_with_provider.blank?
     end
   end
 end

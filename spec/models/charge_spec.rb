@@ -7,6 +7,8 @@ RSpec.describe Charge, type: :model do
 
   it_behaves_like 'paper_trail traceable'
 
+  it { is_expected.to have_many(:filters).dependent(:destroy) }
+
   describe '#properties' do
     context 'with group properties' do
       it 'returns the group properties' do
@@ -372,18 +374,6 @@ RSpec.describe Charge, type: :model do
   describe '#validate_pay_in_advance' do
     it 'does not return an error' do
       expect(build(:standard_charge)).to be_valid
-    end
-
-    context 'when billable metric is recurring_count_agg' do
-      it 'returns an error' do
-        billable_metric = create(:recurring_billable_metric)
-        charge = build(:standard_charge, :pay_in_advance, billable_metric:)
-
-        aggregate_failures do
-          expect(charge).not_to be_valid
-          expect(charge.errors.messages[:pay_in_advance]).to include('invalid_aggregation_type_or_charge_model')
-        end
-      end
     end
 
     context 'when billable metric is max_agg' do

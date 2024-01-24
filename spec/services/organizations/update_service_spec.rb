@@ -24,10 +24,12 @@ RSpec.describe Organizations::UpdateService do
       state: 'Foobar',
       zipcode: 'FOO1234',
       city: 'Foobar',
+      default_currency: 'EUR',
       country:,
       timezone:,
       logo:,
       email_settings:,
+      eu_tax_management: true,
       billing_configuration: {
         invoice_footer: 'invoice footer',
         document_locale: 'fr',
@@ -51,10 +53,38 @@ RSpec.describe Organizations::UpdateService do
         expect(result.organization.zipcode).to eq('FOO1234')
         expect(result.organization.city).to eq('Foobar')
         expect(result.organization.country).to eq('FR')
+        expect(result.organization.default_currency).to eq('EUR')
         expect(result.organization.timezone).to eq('UTC')
 
         expect(result.organization.invoice_footer).to eq('invoice footer')
         expect(result.organization.document_locale).to eq('fr')
+        expect(result.organization.eu_tax_management).to be_truthy
+      end
+    end
+
+    context 'when document_number_prefix is sent' do
+      before { params[:document_number_prefix] = 'abc' }
+
+      it 'converts document_number_prefix to upcase version' do
+        result = update_service.call
+
+        aggregate_failures do
+          expect(result.organization.document_number_prefix).to eq('ABC')
+        end
+      end
+    end
+
+    context 'when document_number_prefix is invalid' do
+      before { params[:document_number_prefix] = 'aaaaaaaaaaaaaaa' }
+
+      it 'returns an error' do
+        result = update_service.call
+
+        aggregate_failures do
+          expect(result).not_to be_success
+          expect(result.error).to be_a(BaseService::ValidationFailure)
+          expect(result.error.messages[:document_number_prefix]).to eq(['value_is_too_long'])
+        end
       end
     end
 
@@ -219,6 +249,24 @@ RSpec.describe Organizations::UpdateService do
             expect(result.error).to be_a(BaseService::ValidationFailure)
             expect(result.error.messages[:vat_rate]).to eq(['multiple_taxes'])
           end
+        end
+      end
+    end
+
+    context 'when eu tax management is activated' do
+      let(:tax_auto_generate_service) { instance_double(Taxes::AutoGenerateService) }
+
+      before do
+        allow(Taxes::AutoGenerateService).to receive(:new).and_return(tax_auto_generate_service)
+        allow(tax_auto_generate_service).to receive(:call)
+      end
+
+      it 'calls the taxes auto generate service' do
+        result = update_service.call
+
+        aggregate_failures do
+          expect(result).to be_success
+          expect(tax_auto_generate_service).to have_received(:call)
         end
       end
     end

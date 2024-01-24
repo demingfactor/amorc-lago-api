@@ -61,6 +61,10 @@ module ScenariosHelper
     put_with_token(organization, "/api/v1/invoices/#{invoice.id}/finalize", {})
   end
 
+  def update_invoice(invoice, params)
+    put_with_token(organization, "/api/v1/invoices/#{invoice.id}", { invoice: params })
+  end
+
   ### Coupons
 
   def create_coupon(params)
@@ -91,6 +95,16 @@ module ScenariosHelper
     JSON.parse(response.body) unless response.body.empty?
   end
 
+  ### Credit notes
+
+  def create_credit_note(params)
+    post_with_token(organization, '/api/v1/credit_notes', { credit_note: params })
+  end
+
+  def estimate_credit_note(params)
+    post_with_token(organization, '/api/v1/credit_notes/estimate', { credit_note: params })
+  end
+
   # This performs any enqueued-jobs, and continues doing so until the queue is empty.
   # Lots of the jobs enqueue other jobs as part of their work, and this ensures that
   # everything that's supposed to happen, happens.
@@ -103,6 +117,11 @@ module ScenariosHelper
 
   def perform_billing
     Clock::SubscriptionsBillerJob.perform_later
+    perform_all_enqueued_jobs
+  end
+
+  def perform_invoices_refresh
+    Clock::RefreshDraftInvoicesJob.perform_later
     perform_all_enqueued_jobs
   end
 end

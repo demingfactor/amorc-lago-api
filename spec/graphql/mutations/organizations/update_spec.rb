@@ -18,11 +18,19 @@ RSpec.describe Mutations::Organizations::Update, type: :graphql do
           zipcode
           city
           country
+          defaultCurrency
           netPaymentTerm
           timezone
           emailSettings
           webhookUrl
-          billingConfiguration { invoiceFooter, invoiceGracePeriod, documentLocale }
+          euTaxManagement,
+          documentNumbering
+          documentNumberPrefix
+          billingConfiguration {
+            invoiceFooter,
+            invoiceGracePeriod,
+            documentLocale,
+          }
         }
       }
     GQL
@@ -46,7 +54,10 @@ RSpec.describe Mutations::Organizations::Update, type: :graphql do
           zipcode: 'FOO1234',
           city: 'Foobar',
           country: 'FR',
+          defaultCurrency: 'EUR',
+          euTaxManagement: true,
           webhookUrl: 'https://app.test.dev',
+          documentNumberPrefix: 'ORG-2',
           billingConfiguration: {
             invoiceFooter: 'invoice footer',
             documentLocale: 'fr',
@@ -68,11 +79,15 @@ RSpec.describe Mutations::Organizations::Update, type: :graphql do
       expect(result_data['zipcode']).to eq('FOO1234')
       expect(result_data['city']).to eq('Foobar')
       expect(result_data['country']).to eq('FR')
+      expect(result_data['defaultCurrency']).to eq('EUR')
       expect(result_data['netPaymentTerm']).to eq(10)
       expect(result_data['webhookUrl']).to eq('https://app.test.dev')
+      expect(result_data['documentNumbering']).to eq('per_customer')
+      expect(result_data['documentNumberPrefix']).to eq('ORG-2')
       expect(result_data['billingConfiguration']['invoiceFooter']).to eq('invoice footer')
       expect(result_data['billingConfiguration']['invoiceGracePeriod']).to eq(0)
       expect(result_data['billingConfiguration']['documentLocale']).to eq('fr')
+      expect(result_data['euTaxManagement']).to be_truthy
       expect(result_data['timezone']).to eq('TZ_UTC')
     end
   end

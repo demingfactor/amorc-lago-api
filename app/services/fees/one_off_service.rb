@@ -37,6 +37,7 @@ module Fees
             payment_status: :pending,
             taxes_amount_cents: 0,
           )
+          fee.precise_unit_amount = fee.unit_amount.to_f
 
           taxes_result = tax_codes ? Fees::ApplyTaxesService.call(fee:, tax_codes:) : Fees::ApplyTaxesService.call(fee:)
           taxes_result.raise_if_error!

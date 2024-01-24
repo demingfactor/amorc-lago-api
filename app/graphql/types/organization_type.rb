@@ -6,6 +6,7 @@ module Types
 
     field :id, ID, null: false
 
+    field :default_currency, Types::CurrencyEnum, null: false
     field :email, String
     field :legal_name, String
     field :legal_number, String
@@ -26,16 +27,21 @@ module Types
 
     field :timezone, Types::TimezoneEnum, null: true
 
+    field :document_number_prefix, String, null: false
+    field :document_numbering, Types::Organizations::DocumentNumberingEnum, null: false
+
     field :created_at, GraphQL::Types::ISO8601DateTime, null: false
     field :updated_at, GraphQL::Types::ISO8601DateTime, null: false
+
+    field :eu_tax_management, Boolean, null: false
 
     field :billing_configuration, Types::Organizations::BillingConfiguration, null: true
     field :email_settings, [Types::Organizations::EmailSettingsEnum], null: true
     field :taxes, [Types::Taxes::Object], null: true, resolver: Resolvers::TaxesResolver
 
-    field :adyen_payment_provider, Types::PaymentProviders::Adyen, null: true
-    field :gocardless_payment_provider, Types::PaymentProviders::Gocardless, null: true
-    field :stripe_payment_provider, Types::PaymentProviders::Stripe, null: true
+    field :adyen_payment_providers, [Types::PaymentProviders::Adyen], null: true
+    field :gocardless_payment_providers, [Types::PaymentProviders::Gocardless], null: true
+    field :stripe_payment_providers, [Types::PaymentProviders::Stripe], null: true
 
     def billing_configuration
       {
@@ -44,6 +50,7 @@ module Types
         invoice_footer: object&.invoice_footer,
         invoice_grace_period: object&.invoice_grace_period,
         document_locale: object&.document_locale,
+        eu_tax_management: object&.eu_tax_management,
       }
     end
 

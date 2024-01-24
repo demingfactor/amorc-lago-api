@@ -18,11 +18,20 @@ Rails.application.routes.draw do
 
   namespace :api do
     namespace :v1 do
+      namespace :analytics do
+        get :gross_revenue, to: 'gross_revenues#index', as: :gross_revenue
+        get :invoiced_usage, to: 'invoiced_usages#index', as: :invoiced_usage
+        get :invoice_collection, to: 'invoice_collections#index', as: :invoice_collection
+        get :mrr, to: 'mrrs#index', as: :mrr
+      end
+
       resources :customers, param: :external_id, only: %i[create index show destroy] do
         get :portal_url
 
         get :current_usage, to: 'customers/usage#current'
         get :past_usage, to: 'customers/usage#past'
+
+        post :checkout_url
 
         scope module: :customers do
           resources :applied_coupons, only: %i[destroy]
@@ -40,6 +49,7 @@ Rails.application.routes.draw do
       resources :credit_notes, only: %i[create update show index] do
         post :download, on: :member
         put :void, on: :member
+        post :estimate, on: :collection
       end
       resources :events, only: %i[create show] do
         post :estimate_fees, on: :collection

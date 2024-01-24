@@ -22,6 +22,14 @@ module Clockwork
     Clock::ActivateSubscriptionsJob.perform_later
   end
 
+  every(5.minutes, 'schedule:refresh_draft_invoices') do
+    Clock::RefreshDraftInvoicesJob.perform_later
+  end
+
+  every(5.minutes, 'schedule:refresh_wallets_credits') do
+    Clock::RefreshWalletsCreditsJob.perform_later
+  end
+
   every(1.hour, 'schedule:terminate_ended_subscriptions', at: '*:05') do
     Clock::TerminateEndedSubscriptionsJob.perform_later
   end
@@ -46,7 +54,15 @@ module Clockwork
     Clock::SubscriptionsToBeTerminatedJob.perform_later
   end
 
+  every(1.hour, 'schedule:top_up_wallet_interval_credits', at: '*:55') do
+    Clock::CreateIntervalWalletTransactionsJob.perform_later
+  end
+
   every(1.day, 'schedule:clean_webhooks', at: '01:00') do
     Clock::WebhooksCleanupJob.perform_later
+  end
+
+  every(1.hour, 'schedule:post_validate_events', at: '*:05') do
+    Clock::EventsValidationJob.perform_later
   end
 end

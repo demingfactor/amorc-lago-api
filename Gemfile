@@ -11,7 +11,7 @@ gem 'activejob-uniqueness', require: 'active_job/uniqueness/sidekiq_patch'
 gem 'bootsnap', require: false
 gem 'clockwork', require: false
 gem 'puma', '~> 5.6'
-gem 'rails', '~> 7.0.7'
+gem 'rails', '~> 7.0.8'
 gem 'sidekiq'
 
 # Security
@@ -22,11 +22,13 @@ gem 'oauth2'
 gem 'rack-cors'
 
 # Database
+gem 'clickhouse-activerecord', git: 'https://github.com/getlago/clickhouse-activerecord.git'
 gem 'discard', '~> 1.2'
 gem 'kaminari-activerecord'
 gem 'paper_trail'
 gem 'pg'
 gem 'ransack', '~> 4.0.0'
+gem 'scenic'
 gem 'with_advisory_lock'
 
 # Currencies, Countries, Timezones...
@@ -49,7 +51,6 @@ gem 'analytics-ruby', '~> 2.4.0', require: 'segment/analytics'
 
 # Logging
 gem 'lograge'
-gem 'lograge-sql'
 gem 'logstash-event'
 
 # Multipart support
@@ -57,9 +58,9 @@ gem 'multipart-post'
 
 # Monitoring
 gem 'newrelic_rpm'
-gem 'sentry-rails'
-gem 'sentry-ruby'
-gem 'sentry-sidekiq'
+gem 'sentry-rails', '~> 5.12.0'
+gem 'sentry-ruby', '~> 5.12.0'
+gem 'sentry-sidekiq', '~> 5.12.0'
 
 # Storage
 gem 'aws-sdk-s3', require: false
@@ -68,6 +69,12 @@ gem 'google-cloud-storage', require: false
 # Templating
 gem 'slim'
 gem 'slim-rails'
+
+# Kafka
+gem 'karafka'
+
+# Taxes
+gem 'valvat', require: false
 
 group :development, :test, :staging do
   gem 'factory_bot_rails'
@@ -93,6 +100,7 @@ group :test do
 end
 
 group :development do
+  gem 'bullet'
   gem 'coffee-rails'
   gem 'graphiql-rails', git: 'https://github.com/rmosolgo/graphiql-rails.git'
   gem 'sass-rails'

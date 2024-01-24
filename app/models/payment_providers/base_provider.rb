@@ -18,6 +18,9 @@ module PaymentProviders
 
     encrypts :secrets
 
+    validates :code, uniqueness: { scope: :organization_id }
+    validates :name, presence: true
+
     def secrets_json
       JSON.parse(secrets || '{}')
     end
@@ -45,6 +48,14 @@ module PaymentProviders
 
     def webhook_secret
       get_from_settings('webhook_secret')
+    end
+
+    def success_redirect_url=(value)
+      push_to_settings(key: 'success_redirect_url', value:)
+    end
+
+    def success_redirect_url
+      get_from_settings('success_redirect_url')
     end
   end
 end

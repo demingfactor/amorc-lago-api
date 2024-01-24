@@ -9,15 +9,12 @@ module Events
     end
 
     def call
-      event.customer_id = customer&.id
       event.external_customer_id ||= customer&.external_id
 
       # NOTE: prevent subscription if more than 1 subscription is active
       #       if multiple terminated matches the timestamp, takes the most recent
-      if subscriptions.count(&:active?) <= 1
-        subscription = subscriptions.first
-        event.subscription_id = subscription&.id
-        event.external_subscription_id ||= subscription&.external_id
+      if !event.external_subscription_id && subscriptions.count(&:active?) <= 1
+        event.external_subscription_id ||= subscriptions.first&.external_id
       end
 
       event.save!
@@ -37,6 +34,10 @@ module Events
       result
     rescue ActiveRecord::RecordInvalid => e
       delivor_error_webhook(error: e.record.errors.messages)
+
+      result
+    rescue ActiveRecord::RecordNotUnique
+      delivor_error_webhook(error: { transaction_id: ['value_already_exist'] })
 
       result
     end
@@ -107,10 +108,6 @@ module Events
     def handle_quantified_event
       service_result = quantified_event_service.call
       service_result.raise_if_error!
-
-      # TODO: Remove this relation
-      event.quantified_event_id = service_result.quantified_event&.id
-      event.save!
     end
 
     def handle_pay_in_advance

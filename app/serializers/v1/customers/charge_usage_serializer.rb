@@ -24,6 +24,7 @@ module V1
               aggregation_type: fee.billable_metric.aggregation_type,
             },
             groups: groups(fees),
+            grouped_by: fee.grouped_by,
           }
         end
       end
@@ -31,7 +32,7 @@ module V1
       private
 
       def groups(fees)
-        fees.sort_by { |f| f.group&.name }.map do |f|
+        fees.sort_by { |f| f.group&.name.to_s }.map do |f|
           next unless f.group
 
           {

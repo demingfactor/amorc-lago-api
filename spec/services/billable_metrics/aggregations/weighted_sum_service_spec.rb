@@ -5,16 +5,19 @@ require 'rails_helper'
 RSpec.describe BillableMetrics::Aggregations::WeightedSumService, type: :service, transaction: false do
   subject(:aggregator) do
     described_class.new(
-      billable_metric:,
+      event_store_class:,
+      charge:,
       subscription:,
-      group:,
       boundaries: {
         from_datetime:,
         to_datetime:,
         charges_duration:,
       },
+      filters: { group: },
     )
   end
+
+  let(:event_store_class) { Events::Stores::PostgresStore }
 
   let(:subscription) { create(:subscription, started_at: DateTime.parse('2023-04-01 22:22:22')) }
   let(:organization) { subscription.organization }
@@ -22,6 +25,13 @@ RSpec.describe BillableMetrics::Aggregations::WeightedSumService, type: :service
   let(:group) { nil }
 
   let(:billable_metric) { create(:weighted_sum_billable_metric, organization:) }
+
+  let(:charge) do
+    create(
+      :standard_charge,
+      billable_metric:,
+    )
+  end
 
   let(:from_datetime) { Time.zone.parse('2023-08-01 00:00:00.000') }
   let(:to_datetime) { Time.zone.parse('2023-08-31 23:59:59.999') }
@@ -88,7 +98,7 @@ RSpec.describe BillableMetrics::Aggregations::WeightedSumService, type: :service
     end
   end
 
-  context 'with events with the same timestamo' do
+  context 'with events with the same timestamp' do
     let(:events_values) do
       [
         { timestamp: Time.zone.parse('2023-08-01 00:00:00.000'), value: 3 },
@@ -113,7 +123,6 @@ RSpec.describe BillableMetrics::Aggregations::WeightedSumService, type: :service
       create(
         :quantified_event,
         billable_metric:,
-        customer:,
         external_subscription_id: subscription.external_id,
         added_at: from_datetime - 1.day,
         properties: { QuantifiedEvent::RECURRING_TOTAL_UNITS => 1000 },

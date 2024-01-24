@@ -30,9 +30,19 @@ module BillableMetrics
         result
       end
 
-      protected
+      def per_event_aggregation
+        recurring_result = recurring_value
+        recurring_aggregation = recurring_result ? [BigDecimal(recurring_result)] : []
+        recurring_prorated_aggregation = recurring_result ? [BigDecimal(recurring_result) * persisted_pro_rata] : []
+        period_agg = compute_per_event_prorated_aggregation
 
-      attr_reader :options
+        Result.new.tap do |result|
+          result.event_aggregation = recurring_aggregation + (0...period_agg.count).map { |_| 1 }
+          result.event_prorated_aggregation = recurring_prorated_aggregation + period_agg
+        end
+      end
+
+      protected
 
       def compute_prorated_aggregation
         ActiveRecord::Base.connection.execute(prorated_aggregation_query).first['aggregation_result']
@@ -93,9 +103,8 @@ module BillableMetrics
 
       def base_scope
         quantified_events = QuantifiedEvent
-          .joins(customer: :organization)
           .where(billable_metric_id: billable_metric.id)
-          .where(customer_id: subscription.customer_id)
+          .where(organization_id: billable_metric.organization_id)
           .where(external_subscription_id: subscription.external_id)
 
         return quantified_events unless group
@@ -110,6 +119,90 @@ module BillableMetrics
         to_in_timezone = Utils::TimezoneService.date_in_customer_timezone_sql(customer, to)
 
         "SUM((DATE(#{to_in_timezone}) - DATE(#{from_in_timezone}) + 1)::numeric / #{period_duration})::numeric"
+      end
+
+      def compute_per_event_prorated_aggregation
+        all_events = added_list + removed_list + added_and_removed_list
+
+        all_events = all_events.sort_by(&:time)
+
+        all_events.pluck(:value)
+      end
+
+      def added_list
+        time_field = Utils::TimezoneService.date_in_customer_timezone_sql(customer, 'quantified_events.added_at')
+
+        added_elements = prorated_added_query.group(Arel.sql("#{time_field}, quantified_events.id"))
+          .order(Arel.sql("#{time_field} ASC"))
+          .pluck(
+            Arel.sql(
+              [
+                "(#{duration_ratio_sql('quantified_events.added_at', to_datetime)})::numeric",
+                time_field,
+              ].join(', '),
+            ),
+          )
+
+        added_elements.map do |element|
+          OpenStruct.new(
+            time: element.last,
+            value: element.first,
+          )
+        end
+      end
+
+      def removed_list
+        time_field = Utils::TimezoneService.date_in_customer_timezone_sql(customer, 'quantified_events.removed_at')
+
+        removed_elements = prorated_removed_query.group(Arel.sql("#{time_field}, quantified_events.id"))
+          .order(Arel.sql("#{time_field} ASC"))
+          .pluck(
+            Arel.sql(
+              [
+                "(#{duration_ratio_sql(from_datetime, 'quantified_events.removed_at')})::numeric",
+                time_field,
+              ].join(', '),
+            ),
+          )
+
+        removed_elements.map do |element|
+          OpenStruct.new(
+            time: element.last,
+            value: element.first,
+          )
+        end
+      end
+
+      def added_and_removed_list
+        added_field = Utils::TimezoneService.date_in_customer_timezone_sql(customer, 'quantified_events.added_at')
+        removed_field = Utils::TimezoneService.date_in_customer_timezone_sql(customer, 'quantified_events.removed_at')
+
+        added_and_removed_elements = prorated_added_and_removed_query.group(
+          Arel.sql("#{added_field}, #{removed_field}, quantified_events.id"),
+        ).order(
+          Arel.sql("#{added_field} ASC, #{removed_field} ASC"),
+        ).pluck(Arel.sql(
+          [
+            "(#{duration_ratio_sql('quantified_events.added_at', 'quantified_events.removed_at')})::numeric",
+            added_field,
+          ].join(', '),
+        ))
+
+        added_and_removed_elements.map do |element|
+          OpenStruct.new(
+            time: element.last,
+            value: element.first,
+          )
+        end
+      end
+
+      def recurring_value
+        previous_charge_fee_units = previous_charge_fee&.units
+        return previous_charge_fee_units if previous_charge_fee_units
+
+        recurring_value_before_first_fee = prorated_persisted_query.count
+
+        (recurring_value_before_first_fee <= 0) ? nil : recurring_value_before_first_fee
       end
     end
   end

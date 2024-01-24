@@ -70,6 +70,24 @@ module Api
         end
       end
 
+      def checkout_url
+        customer = current_organization.customers.find_by(external_id: params[:customer_external_id])
+
+        result = ::Customers::GenerateCheckoutUrlService.call(customer:)
+
+        if result.success?
+          render(
+            json: ::V1::PaymentProviders::CustomerCheckoutSerializer.new(
+              customer,
+              root_name: 'customer',
+              checkout_url: result.checkout_url,
+            ),
+          )
+        else
+          render_error_response(result)
+        end
+      end
+
       private
 
       def create_params
@@ -96,6 +114,7 @@ module Api
           billing_configuration: [
             :invoice_grace_period,
             :payment_provider,
+            :payment_provider_code,
             :provider_customer_id,
             :sync,
             :sync_with_provider,
@@ -103,7 +122,7 @@ module Api
 
             # NOTE(legacy): vat has been moved to tax model
             :vat_rate,
-            provider_payment_methods: []
+            provider_payment_methods: [],
           ],
           metadata: [
             :id,

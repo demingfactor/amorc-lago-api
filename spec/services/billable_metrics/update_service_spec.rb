@@ -16,9 +16,13 @@ RSpec.describe BillableMetrics::UpdateService, type: :service do
       description: 'New metric description',
       aggregation_type: 'sum_agg',
       field_name: 'field_value',
-    }.tap { |p| p[:group] = group unless group.nil? }
+    }.tap do |p|
+      p[:group] = group unless group.nil?
+      p[:filters] = filters unless filters.nil?
+    end
   end
   let(:group) { nil }
+  let(:filters) { nil }
 
   describe '#call' do
     it 'updates the billable metric' do
@@ -75,6 +79,21 @@ RSpec.describe BillableMetrics::UpdateService, type: :service do
       end
     end
 
+    context 'with filters arguments' do
+      let(:filters) do
+        [
+          {
+            key: 'cloud',
+            values: %w[aws google],
+          },
+        ]
+      end
+
+      it 'updates billable metric\'s filters' do
+        expect { update_service.call }.to change { billable_metric.filters.reload.count }.from(0).to(1)
+      end
+    end
+
     context 'with validation errors' do
       let(:params) do
         {
@@ -106,29 +125,6 @@ RSpec.describe BillableMetrics::UpdateService, type: :service do
           expect(result).not_to be_success
           expect(result.error).to be_a(BaseService::NotFoundFailure)
           expect(result.error.error_code).to eq('billable_metric_not_found')
-        end
-      end
-    end
-
-    context 'when aggregation_type is recurring_count_agg' do
-      let(:params) do
-        {
-          name: 'New Metric',
-          code: 'new_metric',
-          description: 'New metric description',
-          aggregation_type: 'recurring_count_agg',
-          field_name: 'field_value',
-          recurring: true,
-        }.tap { |p| p[:group] = group unless group.nil? }
-      end
-
-      it 'returns an error' do
-        result = update_service.call
-
-        aggregate_failures do
-          expect(result).not_to be_success
-          expect(result.error).to be_a(BaseService::MethodNotAllowedFailure)
-          expect(result.error.code).to eq('invalid_aggregation_type')
         end
       end
     end

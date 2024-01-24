@@ -5,16 +5,21 @@ require 'rails_helper'
 RSpec.describe BillableMetrics::Aggregations::CountService, type: :service do
   subject(:count_service) do
     described_class.new(
-      billable_metric:,
+      event_store_class:,
+      charge:,
       subscription:,
-      group:,
-      event: pay_in_advance_event,
       boundaries: {
         from_datetime:,
         to_datetime:,
       },
+      filters: {
+        group:,
+        event: pay_in_advance_event,
+      },
     )
   end
+
+  let(:event_store_class) { Events::Stores::PostgresStore }
 
   let(:subscription) { create(:subscription) }
   let(:organization) { subscription.organization }
@@ -26,6 +31,13 @@ RSpec.describe BillableMetrics::Aggregations::CountService, type: :service do
       :billable_metric,
       organization:,
       aggregation_type: 'count_agg',
+    )
+  end
+
+  let(:charge) do
+    create(
+      :standard_charge,
+      billable_metric:,
     )
   end
 

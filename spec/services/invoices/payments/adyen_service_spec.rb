@@ -5,15 +5,16 @@ require 'rails_helper'
 RSpec.describe Invoices::Payments::AdyenService, type: :service do
   subject(:adyen_service) { described_class.new(invoice) }
 
-  let(:customer) { create(:customer) }
+  let(:customer) { create(:customer, payment_provider_code: code) }
   let(:organization) { customer.organization }
-  let(:adyen_payment_provider) { create(:adyen_provider, organization:) }
+  let(:adyen_payment_provider) { create(:adyen_provider, organization:, code:) }
   let(:adyen_customer) { create(:adyen_customer, customer:) }
   let(:adyen_client) { instance_double(Adyen::Client) }
   let(:payments_api) { Adyen::PaymentsApi.new(adyen_client, 70) }
   let(:checkout) { Adyen::Checkout.new(adyen_client, 70) }
   let(:payments_response) { generate(:adyen_payments_response) }
   let(:payment_methods_response) { generate(:adyen_payment_methods_response) }
+  let(:code) { 'adyen_1' }
 
   let(:invoice) do
     create(
@@ -130,8 +131,85 @@ RSpec.describe Invoices::Payments::AdyenService, type: :service do
       end
     end
 
+    context 'with error response from adyen' do
+      let(:payments_error_response) { generate(:adyen_payments_error_response) }
+
+      before do
+        allow(payments_api).to receive(:payments).and_return(payments_error_response)
+      end
+
+      it 'delivers an error webhook' do
+        expect { adyen_service.create }.to enqueue_job(SendWebhookJob)
+          .with(
+            'invoice.payment_failure',
+            invoice,
+            provider_customer_id: adyen_customer.provider_customer_id,
+            provider_error: {
+              message: 'There are no payment methods available for the given parameters.',
+              error_code: 'validation',
+            },
+          ).on_queue(:webhook)
+      end
+    end
+
+    context 'with validation error on adyen' do
+      let(:customer) { create(:customer, organization:, payment_provider_code: code) }
+
+      let(:subscription) do
+        create(:subscription, organization:, customer:)
+      end
+
+      let(:organization) do
+        create(:organization, webhook_url: 'https://webhook.com')
+      end
+
+      before do
+        subscription
+      end
+
+      context 'when changing payment method fails with invalid card' do
+        before do
+          allow(payments_api).to receive(:payment_methods)
+            .and_raise(Adyen::ValidationError.new('Invalid card number', nil))
+        end
+
+        it 'delivers an error webhook' do
+          expect { adyen_service.create }.to enqueue_job(SendWebhookJob)
+            .with(
+              'invoice.payment_failure',
+              invoice,
+              provider_customer_id: adyen_customer.provider_customer_id,
+              provider_error: {
+                message: 'Invalid card number',
+                error_code: nil,
+              },
+            ).on_queue(:webhook)
+        end
+      end
+
+      context 'when payment fails with invalid card' do
+        before do
+          allow(payments_api).to receive(:payments)
+            .and_raise(Adyen::ValidationError.new('Invalid card number', nil))
+        end
+
+        it 'delivers an error webhook' do
+          expect { adyen_service.create }.to enqueue_job(SendWebhookJob)
+            .with(
+              'invoice.payment_failure',
+              invoice,
+              provider_customer_id: adyen_customer.provider_customer_id,
+              provider_error: {
+                message: 'Invalid card number',
+                error_code: nil,
+              },
+            ).on_queue(:webhook)
+        end
+      end
+    end
+
     context 'with error on adyen' do
-      let(:customer) { create(:customer, organization:) }
+      let(:customer) { create(:customer, organization:, payment_provider_code: code) }
 
       let(:subscription) do
         create(:subscription, organization:, customer:)
@@ -163,6 +241,26 @@ RSpec.describe Invoices::Payments::AdyenService, type: :service do
             },
           )
       end
+    end
+  end
+
+  describe '#payment_method_params' do
+    subject(:payment_method_params) { adyen_service.__send__(:payment_method_params) }
+
+    let(:params) do
+      {
+        merchantAccount: adyen_payment_provider.merchant_account,
+        shopperReference: adyen_customer.provider_customer_id,
+      }
+    end
+
+    before do
+      adyen_payment_provider
+      adyen_customer
+    end
+
+    it 'returns payment method params' do
+      expect(payment_method_params).to eq(params)
     end
   end
 

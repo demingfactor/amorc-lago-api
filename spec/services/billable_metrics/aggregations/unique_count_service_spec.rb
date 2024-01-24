@@ -5,16 +5,21 @@ require 'rails_helper'
 RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service, transaction: false do
   subject(:count_service) do
     described_class.new(
-      billable_metric:,
+      event_store_class:,
+      charge:,
       subscription:,
-      group:,
-      event: pay_in_advance_event,
       boundaries: {
         from_datetime:,
         to_datetime:,
       },
+      filters: {
+        group:,
+        event: pay_in_advance_event,
+      },
     )
   end
+
+  let(:event_store_class) { Events::Stores::PostgresStore }
 
   let(:subscription) do
     create(
@@ -42,6 +47,13 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
     )
   end
 
+  let(:charge) do
+    create(
+      :standard_charge,
+      billable_metric:,
+    )
+  end
+
   let(:from_datetime) { DateTime.parse('2022-07-09 00:00:00 UTC') }
   let(:to_datetime) { DateTime.parse('2022-08-08 23:59:59 UTC') }
 
@@ -50,17 +62,18 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
   let(:unique_count_event) do
     create(
       :event,
+      organization_id: organization.id,
       code: billable_metric.code,
-      customer:,
-      subscription:,
+      external_customer_id: customer.external_id,
+      external_subscription_id: subscription.external_id,
       timestamp: added_at,
-      quantified_event:,
+      properties: { unique_id: quantified_event.external_id },
     )
   end
   let(:quantified_event) do
     create(
       :quantified_event,
-      customer:,
+      organization:,
       added_at:,
       removed_at:,
       external_subscription_id: subscription.external_id,
@@ -77,7 +90,7 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
       let(:new_quantified_event) do
         create(
           :quantified_event,
-          customer:,
+          organization:,
           added_at: from_datetime + 10.days,
           removed_at:,
           external_subscription_id: subscription.external_id,
@@ -87,11 +100,12 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
       let(:new_unique_count_event) do
         create(
           :event,
+          organization_id: organization.id,
           code: billable_metric.code,
-          customer:,
-          subscription:,
+          external_customer_id: customer.external_id,
+          external_subscription_id: subscription.external_id,
           timestamp: from_datetime + 10.days,
-          quantified_event: new_quantified_event,
+          properties: { unique_id: new_quantified_event.external_id },
         )
       end
 
@@ -115,17 +129,18 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
       let(:new_unique_count_event) do
         create(
           :event,
+          organization_id: organization.id,
           code: billable_metric.code,
-          customer:,
-          subscription:,
+          external_customer_id: customer.external_id,
+          external_subscription_id: subscription.external_id,
           timestamp: from_datetime + 10.days,
-          quantified_event: new_quantified_event,
+          properties: { unique_id: new_quantified_event.external_id },
         )
       end
       let(:new_quantified_event) do
         create(
           :quantified_event,
-          customer:,
+          organization:,
           added_at: from_datetime + 10.days,
           removed_at:,
           external_subscription_id: subscription.external_id,
@@ -268,24 +283,21 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
       let(:previous_event) do
         create(
           :event,
+          organization_id: organization.id,
           code: billable_metric.code,
-          customer:,
-          subscription:,
+          external_customer_id: customer.external_id,
+          external_subscription_id: subscription.external_id,
           timestamp: from_datetime + 5.days,
-          quantified_event: previous_quantified_event,
           properties: {
-            unique_id: '000',
-          },
-          metadata: {
-            current_aggregation: '1',
-            max_aggregation: '3',
+            unique_id: previous_quantified_event.external_id,
           },
         )
       end
+
       let(:previous_quantified_event) do
         create(
           :quantified_event,
-          customer:,
+          organization:,
           added_at: from_datetime + 5.days,
           removed_at:,
           external_id: '000',
@@ -294,7 +306,20 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
         )
       end
 
-      before { previous_event }
+      let(:cached_aggregation) do
+        create(
+          :cached_aggregation,
+          organization:,
+          charge:,
+          event_id: previous_event.id,
+          external_subscription_id: subscription.external_id,
+          timestamp: previous_event.timestamp,
+          current_aggregation: '1',
+          max_aggregation: '3',
+        )
+      end
+
+      before { cached_aggregation }
 
       it 'returns period maximum as aggregation' do
         result = count_service.aggregate(options:)
@@ -302,7 +327,8 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
         expect(result.aggregation).to eq(4)
       end
 
-      context 'when previous event does not exist' do
+      context 'when cached aggregation does not exist' do
+        let(:cached_aggregation) { nil }
         let(:previous_quantified_event) { nil }
 
         before { billable_metric.update!(recurring: false) }
@@ -316,22 +342,22 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
     end
 
     context 'when event is given' do
-      let(:properties) { { unique_id: '111' } }
+      let(:properties) { { unique_id: new_quantified_event.external_id } }
       let(:pay_in_advance_event) do
         create(
           :event,
+          organization_id: organization.id,
           code: billable_metric.code,
-          customer:,
-          subscription:,
+          external_customer_id: customer.external_id,
+          external_subscription_id: subscription.external_id,
           timestamp: from_datetime + 10.days,
           properties:,
-          quantified_event: new_quantified_event,
         )
       end
       let(:new_quantified_event) do
         create(
           :quantified_event,
-          customer:,
+          organization:,
           added_at: from_datetime + 10.days,
           removed_at:,
           external_subscription_id: subscription.external_id,
@@ -375,24 +401,21 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
         let(:previous_event) do
           create(
             :event,
+            organization_id: organization.id,
             code: billable_metric.code,
-            customer:,
-            subscription:,
+            external_customer_id: customer.external_id,
+            external_subscription_id: subscription.external_id,
             timestamp: from_datetime + 5.days,
-            quantified_event: previous_quantified_event,
             properties: {
-              unique_id: '000',
-            },
-            metadata: {
-              current_aggregation: '7',
-              max_aggregation: '7',
+              unique_id: previous_quantified_event.external_id,
             },
           )
         end
+
         let(:previous_quantified_event) do
           create(
             :quantified_event,
-            customer:,
+            organization:,
             added_at: from_datetime + 5.days,
             removed_at:,
             external_id: '000',
@@ -401,7 +424,20 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
           )
         end
 
-        before { previous_event }
+        let(:cached_aggregation) do
+          create(
+            :cached_aggregation,
+            organization:,
+            charge:,
+            event_id: previous_event.id,
+            external_subscription_id: subscription.external_id,
+            timestamp: previous_event.timestamp,
+            current_aggregation: '7',
+            max_aggregation: '7',
+          )
+        end
+
+        before { cached_aggregation }
 
         it 'assigns a pay_in_advance aggregation' do
           result = count_service.aggregate
@@ -414,24 +450,21 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
         let(:previous_event) do
           create(
             :event,
+            organization_id: organization.id,
             code: billable_metric.code,
-            customer:,
-            subscription:,
+            external_customer_id: customer.external_id,
+            external_subscription_id: subscription.external_id,
             timestamp: from_datetime + 5.days,
-            quantified_event: previous_quantified_event,
             properties: {
-              unique_id: '000',
-            },
-            metadata: {
-              current_aggregation: '4',
-              max_aggregation: '7',
+              unique_id: previous_quantified_event.external_id,
             },
           )
         end
+
         let(:previous_quantified_event) do
           create(
             :quantified_event,
-            customer:,
+            organization:,
             added_at: from_datetime + 5.days,
             removed_at:,
             external_id: '000',
@@ -440,7 +473,20 @@ RSpec.describe BillableMetrics::Aggregations::UniqueCountService, type: :service
           )
         end
 
-        before { previous_event }
+        let(:cached_aggregation) do
+          create(
+            :cached_aggregation,
+            organization:,
+            charge:,
+            event_id: previous_event.id,
+            external_subscription_id: subscription.external_id,
+            timestamp: previous_event.timestamp,
+            current_aggregation: '4',
+            max_aggregation: '7',
+          )
+        end
+
+        before { cached_aggregation }
 
         it 'assigns a pay_in_advance aggregation' do
           result = count_service.aggregate

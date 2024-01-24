@@ -63,6 +63,7 @@ RSpec.describe Api::V1::CustomersController, type: :request do
           billing_configuration: {
             invoice_grace_period: 3,
             payment_provider: 'stripe',
+            payment_provider_code: stripe_provider.code,
             provider_customer_id: 'stripe_id',
             vat_rate: 20,
             document_locale: 'fr',
@@ -94,6 +95,7 @@ RSpec.describe Api::V1::CustomersController, type: :request do
           aggregate_failures do
             expect(billing).to be_present
             expect(billing[:payment_provider]).to eq('stripe')
+            expect(billing[:payment_provider_code]).to eq(stripe_provider.code)
             expect(billing[:provider_customer_id]).to eq('stripe_id')
             expect(billing[:invoice_grace_period]).to eq(3)
             expect(billing[:vat_rate]).to eq(20)
@@ -116,6 +118,7 @@ RSpec.describe Api::V1::CustomersController, type: :request do
           aggregate_failures do
             expect(billing).to be_present
             expect(billing[:payment_provider]).to eq('stripe')
+            expect(billing[:payment_provider_code]).to eq(stripe_provider.code)
             expect(billing[:provider_customer_id]).to eq('stripe_id')
             expect(billing[:invoice_grace_period]).to eq(3)
             expect(billing[:vat_rate]).to eq(20)
@@ -138,6 +141,7 @@ RSpec.describe Api::V1::CustomersController, type: :request do
           aggregate_failures do
             expect(billing).to be_present
             expect(billing[:payment_provider]).to eq('stripe')
+            expect(billing[:payment_provider_code]).to eq(stripe_provider.code)
             expect(billing[:provider_customer_id]).to eq('stripe_id')
             expect(billing[:invoice_grace_period]).to eq(3)
             expect(billing[:vat_rate]).to eq(20)
@@ -160,6 +164,7 @@ RSpec.describe Api::V1::CustomersController, type: :request do
           aggregate_failures do
             expect(billing).to be_present
             expect(billing[:payment_provider]).to eq('stripe')
+            expect(billing[:payment_provider_code]).to eq(stripe_provider.code)
             expect(billing[:provider_customer_id]).to eq('stripe_id')
             expect(billing[:invoice_grace_period]).to eq(3)
             expect(billing[:vat_rate]).to eq(20)
@@ -336,6 +341,35 @@ RSpec.describe Api::V1::CustomersController, type: :request do
         delete_with_token(organization, '/api/v1/customers/invalid')
 
         expect(response).to have_http_status(:not_found)
+      end
+    end
+  end
+
+  describe 'POST /customers/:external_customer_id/checkout_url' do
+    let(:organization) { create(:organization) }
+    let(:stripe_provider) { create(:stripe_provider, organization:) }
+    let(:customer) { create(:customer, organization:) }
+
+    before do
+      create(
+        :stripe_customer,
+        customer_id: customer.id,
+        payment_provider: stripe_provider,
+      )
+
+      customer.update(payment_provider: 'stripe', payment_provider_code: stripe_provider.code)
+
+      allow(Stripe::Checkout::Session).to receive(:create)
+        .and_return({ 'url' => 'https://example.com' })
+    end
+
+    it 'returns the new generated checkout url' do
+      post_with_token(organization, "/api/v1/customers/#{customer.external_id}/checkout_url")
+
+      aggregate_failures do
+        expect(response).to have_http_status(:success)
+
+        expect(json[:customer][:checkout_url]).to eq('https://example.com')
       end
     end
   end

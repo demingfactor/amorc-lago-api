@@ -19,7 +19,8 @@ RSpec.describe Charges::ApplyPayInAdvanceChargeModelService, type: :service do
 
   let(:aggregator) do
     BillableMetrics::Aggregations::CountService.new(
-      billable_metric: charge.billable_metric,
+      event_store_class: Events::Stores::PostgresStore,
+      charge:,
       subscription: nil,
       boundaries: nil,
     )
@@ -62,7 +63,8 @@ RSpec.describe Charges::ApplyPayInAdvanceChargeModelService, type: :service do
 
         expect(result.units).to eq(1)
         expect(result.count).to eq(1)
-        expect(result.amount).to eq(200)
+        expect(result.amount).to eq(200) # In cents
+        expect(result.unit_amount).to eq(2)
       end
     end
 

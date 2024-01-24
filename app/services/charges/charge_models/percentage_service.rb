@@ -13,6 +13,38 @@ module Charges
         compute_percentage_amount + compute_fixed_amount
       end
 
+      def amount_details
+        paid_units = units - free_units_value
+        paid_units = 0 if paid_units.negative?
+        per_unit_amount = paid_units.zero? ? BigDecimal(0) : compute_percentage_amount.fdiv(paid_units)
+        free_events = if aggregation_result.count >= free_units_count
+          free_units_count
+        else
+          [aggregation_result.count - free_units_count, 0].max
+        end
+        paid_events = aggregation_result.count - free_events
+
+        {
+          units: BigDecimal(units).to_s,
+          free_units: BigDecimal(free_units_value).to_s,
+          free_events:,
+          paid_units: BigDecimal(paid_units).to_s,
+          rate:,
+          per_unit_total_amount: compute_percentage_amount,
+          paid_events:,
+          fixed_fee_unit_amount: paid_events.positive? ? fixed_amount : BigDecimal(0),
+          fixed_fee_total_amount: compute_fixed_amount.to_s,
+          min_max_adjustment_total_amount: min_max_adjustment_total_amount.to_s,
+        }
+      end
+
+      def unit_amount
+        total_units = aggregation_result.full_units_number || units
+        return 0 if total_units.zero?
+
+        compute_amount / total_units
+      end
+
       def compute_percentage_amount
         return 0 if free_units_value > units
 
@@ -20,15 +52,18 @@ module Charges
       end
 
       def compute_fixed_amount
-        return 0 if units.zero?
-        return 0 if fixed_amount.nil?
-        return 0 if free_units_count >= aggregation_result.count
+        return 0.0 if units.zero?
+        return 0.0 if fixed_amount.nil?
+        return 0.0 if free_units_count >= aggregation_result.count
 
         (aggregation_result.count - free_units_count) * fixed_amount
       end
 
       def free_units_value
         return 0 if last_running_total.zero?
+        if free_units_per_events > 0 && free_units_per_events < (aggregation_result.options[:running_total]&.count || 0)
+          return aggregation_result.options[:running_total][free_units_per_events - 1]
+        end
         return last_running_total if free_units_per_total_aggregation.zero?
         return last_running_total if last_running_total <= free_units_per_total_aggregation
 
@@ -138,6 +173,12 @@ module Charges
         return per_transaction_max_amount if per_transaction_max_amount? && amount > per_transaction_max_amount
 
         amount
+      end
+
+      def min_max_adjustment_total_amount
+        return BigDecimal(0) unless should_apply_min_max?
+
+        compute_amount_with_transaction_min_max - compute_percentage_amount - compute_fixed_amount
       end
     end
   end

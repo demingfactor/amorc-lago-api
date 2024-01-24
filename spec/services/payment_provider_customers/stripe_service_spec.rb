@@ -51,6 +51,59 @@ RSpec.describe PaymentProviderCustomers::StripeService, type: :service do
       end
     end
 
+    context 'when no payment provider is connected' do
+      let(:stripe_customer) do
+        create(:stripe_customer, customer:, provider_customer_id: nil)
+      end
+
+      before { stripe_provider.destroy! }
+
+      it 'does not call stripe API' do
+        allow(Stripe::Customer).to receive(:create)
+
+        stripe_service.create
+
+        expect(Stripe::Customer).not_to have_received(:create)
+      end
+
+      it 'returns success' do
+        allow(Stripe::Customer).to receive(:create)
+
+        result = stripe_service.create
+
+        expect(result).to be_success
+      end
+    end
+
+    context 'when payment provider has incorrect API key' do
+      before do
+        allow(Stripe::Customer).to receive(:create)
+          .and_raise(Stripe::AuthenticationError.new('API key invalid.'))
+      end
+
+      it 'returns an unauthorized error' do
+        result = stripe_service.create
+
+        aggregate_failures do
+          expect(result).not_to be_success
+          expect(result.error).to be_a(BaseService::UnauthorizedFailure)
+          expect(result.error.message).to eq('Stripe authentication failed. API key invalid.')
+        end
+      end
+
+      it 'delivers an error webhook' do
+        expect { stripe_service.create }.to enqueue_job(SendWebhookJob)
+          .with(
+            'customer.payment_provider_error',
+            customer,
+            provider_error: {
+              message: 'API key invalid.',
+              error_code: nil,
+            },
+          ).on_queue(:webhook)
+      end
+    end
+
     context 'when failing to create the customer' do
       it 'delivers an error webhook' do
         allow(Stripe::Customer).to receive(:create)
@@ -69,6 +122,138 @@ RSpec.describe PaymentProviderCustomers::StripeService, type: :service do
               error_code: nil,
             },
           )
+      end
+    end
+  end
+
+  describe '#update' do
+    context 'when stripe raises an error' do
+      before do
+        allow(Stripe::Customer).to receive(:update).and_raise(stripe_error)
+      end
+
+      context 'when stripe raises an invalid request error' do
+        let(:stripe_error) { Stripe::InvalidRequestError.new('Invalid request', nil) }
+
+        it 'returns an error result' do
+          result = stripe_service.update
+
+          aggregate_failures do
+            expect(result).not_to be_success
+            expect(result.error).to be_a(BaseService::ServiceFailure)
+            expect(result.error.code).to eq('stripe_error')
+            expect(result.error.message).to eq('stripe_error: Invalid request')
+          end
+        end
+
+        it 'delivers an error webhook' do
+          expect { stripe_service.update }.to enqueue_job(SendWebhookJob)
+            .with(
+              'customer.payment_provider_error',
+              customer,
+              provider_error: {
+                message: 'Invalid request',
+                error_code: nil,
+              },
+            ).on_queue(:webhook)
+        end
+      end
+
+      context 'when stripe raises a permission error' do
+        let(:stripe_error) { Stripe::PermissionError.new('Permission error') }
+
+        it 'returns an error result' do
+          result = stripe_service.update
+
+          aggregate_failures do
+            expect(result).not_to be_success
+            expect(result.error).to be_a(BaseService::ServiceFailure)
+            expect(result.error.code).to eq('stripe_error')
+            expect(result.error.message).to eq('stripe_error: Permission error')
+          end
+        end
+
+        it 'delivers an error webhook' do
+          expect { stripe_service.update }.to enqueue_job(SendWebhookJob)
+            .with(
+              'customer.payment_provider_error',
+              customer,
+              provider_error: {
+                message: 'Permission error',
+                error_code: nil,
+              },
+            ).on_queue(:webhook)
+        end
+      end
+
+      context 'when stripe raises an authentication error' do
+        let(:stripe_error) { Stripe::AuthenticationError.new('Invalid username.') }
+
+        it 'returns an error result' do
+          result = stripe_service.update
+
+          aggregate_failures do
+            expect(result).not_to be_success
+            expect(result.error).to be_a(BaseService::UnauthorizedFailure)
+            expect(result.error.message).to eq('Stripe authentication failed. Invalid username.')
+          end
+        end
+
+        it 'delivers an error webhook' do
+          expect { stripe_service.update }.to enqueue_job(SendWebhookJob)
+            .with(
+              'customer.payment_provider_error',
+              customer,
+              provider_error: {
+                message: 'Invalid username.',
+                error_code: nil,
+              },
+            ).on_queue(:webhook)
+        end
+      end
+    end
+
+    context 'when no stripe error is raised' do
+      before do
+        allow(Stripe::Customer).to receive(:update).and_return(true)
+      end
+
+      context 'when stripe payment provider is present' do
+        it 'calls stripe API' do
+          stripe_service.update
+
+          expect(Stripe::Customer).to have_received(:update)
+        end
+
+        it 'returns a successful result' do
+          result = stripe_service.update
+
+          expect(result).to be_success
+        end
+
+        it 'does not deliver an error webhook' do
+          expect { stripe_service.update }.not_to enqueue_job(SendWebhookJob)
+        end
+      end
+
+      context 'when stripe payment provider is not present' do
+        before { stripe_provider.destroy! }
+
+        it 'does not call stripe API' do
+          stripe_service.update
+
+          expect(Stripe::Customer).not_to have_received(:update)
+        end
+
+        it 'returns a successful result' do
+          result = stripe_service.update
+
+          expect(result).to be_success
+        end
+
+        it 'does not deliver an error webhook' do
+          expect { stripe_service.update }.not_to enqueue_job(SendWebhookJob)
+        end
       end
     end
   end
@@ -458,6 +643,24 @@ RSpec.describe PaymentProviderCustomers::StripeService, type: :service do
       aggregate_failures do
         expect(SendWebhookJob).to have_been_enqueued
           .with('customer.checkout_url_generated', customer, checkout_url: 'https://example.com')
+      end
+    end
+  end
+
+  describe '#success_redirect_url' do
+    subject(:success_redirect_url) { stripe_service.__send__(:success_redirect_url) }
+
+    context 'when payment provider has success redirect url' do
+      it "returns payment provider's success redirect url" do
+        expect(success_redirect_url).to eq(stripe_provider.success_redirect_url)
+      end
+    end
+
+    context 'when payment provider has no success redirect url' do
+      let(:stripe_provider) { create(:stripe_provider, success_redirect_url: nil) }
+
+      it 'returns the default success redirect url' do
+        expect(success_redirect_url).to eq(PaymentProviders::StripeProvider::SUCCESS_REDIRECT_URL)
       end
     end
   end

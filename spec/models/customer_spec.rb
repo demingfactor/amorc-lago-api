@@ -51,6 +51,9 @@ RSpec.describe Customer, type: :model do
 
       customer.timezone = 'foo'
       expect(customer).not_to be_valid
+
+      customer.timezone = 'America/Guadeloupe'
+      expect(customer).not_to be_valid
     end
   end
 
@@ -202,6 +205,25 @@ RSpec.describe Customer, type: :model do
         expect(customer).to be_valid
         expect(customer.sequential_id).to eq(1)
         expect(customer.slug).to eq("LAG-#{organization_id_substring}-001")
+      end
+    end
+
+    context 'with custom document_number_prefix' do
+      let(:organization) { create(:organization, name: 'LAGO') }
+
+      before do
+        create(:customer, organization:, sequential_id: 5)
+        organization.update!(document_number_prefix: 'ORG-55')
+      end
+
+      it 'assigns a sequential id and a slug to a new customer' do
+        customer.save
+
+        aggregate_failures do
+          expect(customer).to be_valid
+          expect(customer.sequential_id).to eq(6)
+          expect(customer.slug).to eq('ORG-55-006')
+        end
       end
     end
   end

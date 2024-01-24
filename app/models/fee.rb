@@ -8,10 +8,12 @@ class Fee < ApplicationRecord
   belongs_to :add_on, -> { with_discarded }, optional: true
   belongs_to :applied_add_on, optional: true
   belongs_to :subscription, optional: true
+  belongs_to :charge_filter, -> { with_discarded }, optional: true
   belongs_to :group, -> { with_discarded }, optional: true
   belongs_to :invoiceable, polymorphic: true, optional: true
   belongs_to :true_up_parent_fee, class_name: 'Fee', optional: true
 
+  has_one :adjusted_fee, dependent: :nullify
   has_one :customer, through: :subscription
   has_one :organization, through: :invoice
   has_one :billable_metric, -> { with_discarded }, through: :charge
@@ -29,7 +31,7 @@ class Fee < ApplicationRecord
   monetize :unit_amount_cents, disable_validation: true, allow_nil: true, with_model_currency: :currency
 
   # TODO: Deprecate add_on type in the near future
-  FEE_TYPES = %i[charge add_on subscription credit].freeze
+  FEE_TYPES = %i[charge add_on subscription credit commitment].freeze
   PAYMENT_STATUS = %i[pending succeeded failed refunded].freeze
 
   enum fee_type: FEE_TYPES
@@ -88,7 +90,7 @@ class Fee < ApplicationRecord
   def invoice_name
     return invoice_display_name if invoice_display_name.present?
     return charge.invoice_display_name.presence || billable_metric.name if charge?
-    return add_on.invoice_display_name if add_on?
+    return add_on.invoice_name if add_on?
     return fee_type if credit?
 
     subscription.plan.invoice_display_name

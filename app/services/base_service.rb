@@ -72,6 +72,12 @@ class BaseService
     end
   end
 
+  class UnauthorizedFailure < FailedResult
+    def initialize(result, message:)
+      super(result, message)
+    end
+  end
+
   class Result < OpenStruct
     attr_reader :error
 
@@ -121,6 +127,10 @@ class BaseService
       fail_with_error!(ForbiddenFailure.new(self, code:))
     end
 
+    def unauthorized_failure!(message: 'unauthorized')
+      fail_with_error!(UnauthorizedFailure.new(self, message:))
+    end
+
     def raise_if_error!
       return if success?
 
@@ -132,8 +142,8 @@ class BaseService
     attr_accessor :failure
   end
 
-  def self.call(...)
-    new(...).call
+  def self.call(*, **, &block)
+    new(*, **).call(&block)
   end
 
   def initialize(current_user = nil)
@@ -142,7 +152,7 @@ class BaseService
     result.user = current_user
   end
 
-  def call
+  def call(**args, &block)
     raise NotImplementedError
   end
 

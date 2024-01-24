@@ -304,6 +304,47 @@ RSpec.describe Plans::UpdateService, type: :service do
       end
     end
 
+    context 'with existing charge attached to subscription' do
+      let(:existing_charge) do
+        create(
+          :standard_charge,
+          plan_id: plan.id,
+          billable_metric_id: sum_billable_metric.id,
+          amount_currency: 'USD',
+          properties: {
+            amount: '300',
+          },
+        )
+      end
+
+      let(:subscription) { create(:subscription, plan:) }
+
+      let(:update_args) do
+        {
+          id: plan.id,
+          code: 'new_plan',
+          amount_cents: 200,
+          charges: [
+            {
+              id: existing_charge.id,
+              billable_metric_id: sum_billable_metric.id,
+              charge_model: 'standard',
+              tax_codes: [tax2.code],
+            },
+          ],
+        }
+      end
+
+      before do
+        existing_charge && subscription
+      end
+
+      it 'updates existing charge', :aggregate_failures do
+        expect { plans_service.call }.not_to change(Charge, :count)
+        expect(plan.charges.first.taxes.pluck(:code)).to eq([tax2.code])
+      end
+    end
+
     context 'with charge to delete' do
       let(:subscription) { create(:subscription, plan:) }
       let(:charge) do
@@ -352,13 +393,11 @@ RSpec.describe Plans::UpdateService, type: :service do
         end
       end
 
-      it 'enqueues a Invoices::RefreshBatchJob' do
+      it 'marks invoices as ready to be refreshed' do
         invoice = create(:invoice, :draft)
         create(:invoice_subscription, subscription:, invoice:)
 
-        expect do
-          plans_service.call
-        end.to have_enqueued_job(Invoices::RefreshBatchJob).with([invoice.id])
+        expect { plans_service.call }.to change { invoice.reload.ready_to_be_refreshed }.to(true)
       end
     end
 

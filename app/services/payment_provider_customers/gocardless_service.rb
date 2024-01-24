@@ -2,6 +2,8 @@
 
 module PaymentProviderCustomers
   class GocardlessService < BaseService
+    include Customers::PaymentProviderFinder
+
     def initialize(gocardless_customer = nil)
       @gocardless_customer = gocardless_customer
 
@@ -25,17 +27,24 @@ module PaymentProviderCustomers
       result
     end
 
-    def generate_checkout_url
+    def update
+      result
+    end
+
+    def generate_checkout_url(send_webhook: true)
       billing_request = create_billing_request(gocardless_customer.provider_customer_id)
       billing_request_flow = create_billing_request_flow(billing_request.id)
 
-      SendWebhookJob.perform_later(
-        'customer.checkout_url_generated',
-        customer,
-        checkout_url: billing_request_flow.authorisation_url,
-      )
-
       result.checkout_url = billing_request_flow.authorisation_url
+
+      if send_webhook
+        SendWebhookJob.perform_later(
+          'customer.checkout_url_generated',
+          customer,
+          checkout_url: result.checkout_url,
+        )
+      end
+
       result
     end
 
@@ -50,7 +59,7 @@ module PaymentProviderCustomers
     end
 
     def gocardless_payment_provider
-      @gocardless_payment_provider || organization.gocardless_payment_provider
+      @gocardless_payment_provider ||= payment_provider(customer)
     end
 
     def client
@@ -115,8 +124,8 @@ module PaymentProviderCustomers
     def create_billing_request_flow(billing_request_id)
       client.billing_request_flows.create(
         params: {
-          redirect_uri: PaymentProviders::GocardlessProvider::BILLING_REQUEST_REDIRECT_URL,
-          exit_uri: PaymentProviders::GocardlessProvider::BILLING_REQUEST_REDIRECT_URL,
+          redirect_uri: success_redirect_url,
+          exit_uri: success_redirect_url,
           links: {
             billing_request: billing_request_id,
           },
@@ -126,6 +135,11 @@ module PaymentProviderCustomers
       deliver_error_webhook(e)
 
       raise
+    end
+
+    def success_redirect_url
+      gocardless_payment_provider.success_redirect_url.presence ||
+        PaymentProviders::GocardlessProvider::SUCCESS_REDIRECT_URL
     end
   end
 end

@@ -3,6 +3,9 @@
 module Invoices
   module Payments
     class AdyenService < BaseService
+      include Lago::Adyen::ErrorHandlable
+      include Customers::PaymentProviderFinder
+
       PENDING_STATUSES = %w[AuthorisedPending Received].freeze
       SUCCESS_STATUSES = %w[Authorised SentForSettle SettleScheduled Settled Refunded].freeze
       FAILED_STATUSES = %w[Cancelled CaptureFailed Error Expired Refused].freeze
@@ -24,7 +27,11 @@ module Invoices
 
         increment_payment_attempts
 
-        adyen_result = create_adyen_payment
+        res = create_adyen_payment
+        return result unless res
+
+        handle_adyen_response(res)
+        return result unless result.success?
 
         payment = Payment.new(
           invoice:,
@@ -32,8 +39,8 @@ module Invoices
           payment_provider_customer_id: customer.adyen_customer.id,
           amount_cents: invoice.total_amount_cents,
           amount_currency: invoice.currency.upcase,
-          provider_payment_id: adyen_result['pspReference'],
-          status: adyen_result['resultCode'],
+          provider_payment_id: res.response['pspReference'],
+          status: res.response['resultCode'],
         )
         payment.save!
 
@@ -84,24 +91,26 @@ module Invoices
       end
 
       def adyen_payment_provider
-        @adyen_payment_provider ||= organization.adyen_payment_provider
+        @adyen_payment_provider ||= payment_provider(customer)
       end
 
       def update_payment_method_id
-        result = client.checkout.payments_api.payment_methods(payment_method_params).response
+        result = client.checkout.payments_api.payment_methods(
+          Lago::Adyen::Params.new(payment_method_params).to_h,
+        ).response
 
-        if (payment_method_id = result['storedPaymentMethods']&.first&.dig('id'))
-          customer.adyen_customer.update!(payment_method_id:)
-        end
-      rescue Adyen::AdyenError => e
-        deliver_error_webhook(e)
-        raise
+        payment_method_id = result['storedPaymentMethods']&.first&.dig('id')
+        customer.adyen_customer.update!(payment_method_id:) if payment_method_id
       end
 
       def create_adyen_payment
         update_payment_method_id
 
-        client.checkout.payments_api.payments(payment_params).response
+        client.checkout.payments_api.payments(Lago::Adyen::Params.new(payment_params).to_h)
+      rescue Adyen::ValidationError => e
+        deliver_error_webhook(e)
+        update_invoice_payment_status(payment_status: :failed, deliver_webhook: false)
+        nil
       rescue Adyen::AdyenError => e
         deliver_error_webhook(e)
         update_invoice_payment_status(payment_status: :failed, deliver_webhook: false)
@@ -112,7 +121,7 @@ module Invoices
       def payment_method_params
         {
           merchantAccount: adyen_payment_provider.merchant_account,
-          shopperReference: customer.external_id,
+          shopperReference: customer.adyen_customer.provider_customer_id,
         }
       end
 
@@ -127,7 +136,7 @@ module Invoices
             type: 'scheme',
             storedPaymentMethodId: customer.adyen_customer.payment_method_id,
           },
-          shopperReference: customer.external_id,
+          shopperReference: customer.adyen_customer.provider_customer_id,
           merchantAccount: adyen_payment_provider.merchant_account,
           shopperInteraction: 'ContAuth',
           recurringProcessingModel: 'UnscheduledCardOnFile',

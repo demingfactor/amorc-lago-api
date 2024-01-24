@@ -29,29 +29,6 @@ RSpec.describe BillableMetrics::CreateService, type: :service do
         .to change(BillableMetric, :count).by(1)
     end
 
-    context 'when aggregation_type is recurring_count_agg' do
-      let(:create_args) do
-        {
-          name: 'New Metric',
-          code: 'new_metric',
-          description: 'New metric description',
-          organization_id: organization.id,
-          aggregation_type: 'recurring_count_agg',
-          recurring: true,
-        }
-      end
-
-      it 'returns an error' do
-        result = create_service.create(**create_args)
-
-        aggregate_failures do
-          expect(result).not_to be_success
-          expect(result.error).to be_a(BaseService::MethodNotAllowedFailure)
-          expect(result.error.code).to eq('invalid_aggregation_type')
-        end
-      end
-    end
-
     context 'with code already used by a deleted metric' do
       it 'creates a billable metric with the same code' do
         create(:billable_metric, organization:, code: 'new_metric', deleted_at: Time.current)
@@ -89,6 +66,32 @@ RSpec.describe BillableMetrics::CreateService, type: :service do
           expect(result).not_to be_success
           expect(result.error).to be_a(BaseService::ValidationFailure)
           expect(result.error.messages[:group]).to eq(['value_is_invalid'])
+        end
+      end
+    end
+
+    context 'with filters arguments' do
+      let(:filters) do
+        [
+          {
+            key: 'cloud',
+            values: %w[aws google],
+          },
+        ]
+      end
+
+      it 'creates billable metric\'s filters' do
+        expect { create_service.create(**create_args.merge(filters:)) }
+          .to change(BillableMetricFilter, :count).by(1)
+      end
+
+      it 'returns an error if a filter is invalid' do
+        result = create_service.create(**create_args.merge(filters: [{ key: 'foo' }]))
+
+        aggregate_failures do
+          expect(result).not_to be_success
+          expect(result.error).to be_a(BaseService::ValidationFailure)
+          expect(result.error.messages[:values]).to eq(['value_is_mandatory'])
         end
       end
     end

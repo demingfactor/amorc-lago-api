@@ -40,6 +40,7 @@ module Api
       def input_params
         params.require(:organization).permit(
           :country,
+          :default_currency,
           :address_line1,
           :address_line2,
           :state,
@@ -52,6 +53,8 @@ module Api
           :tax_identification_number,
           :timezone,
           :webhook_url,
+          :document_numbering,
+          :document_number_prefix,
           email_settings: [],
           billing_configuration: [
             :invoice_footer,

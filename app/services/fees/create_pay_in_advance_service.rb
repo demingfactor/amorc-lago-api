@@ -2,11 +2,10 @@
 
 module Fees
   class CreatePayInAdvanceService < BaseService
-    def initialize(charge:, event:, estimate: false, invoice: nil)
+    def initialize(charge:, event:, estimate: false)
       @charge = charge
       @event = event
       @estimate = estimate
-      @invoice = invoice
 
       super
     end
@@ -15,7 +14,7 @@ module Fees
       fees = []
 
       ActiveRecord::Base.transaction do
-        if charge.group_properties.blank?
+        if charge.billable_metric.selectable_groups.blank?
           fees << create_fee(properties: charge.properties)
         else
           fees += create_group_properties_fees
@@ -34,7 +33,7 @@ module Fees
 
     private
 
-    attr_reader :charge, :event, :estimate, :invoice
+    attr_reader :charge, :event, :estimate
 
     delegate :billable_metric, to: :charge
     delegate :subscription, :customer, to: :event
@@ -43,13 +42,13 @@ module Fees
       ActiveRecord::Base.transaction do
         aggregation_result = aggregate(properties:, group:)
 
-        update_event_metadata(aggregation_result:)
+        cache_aggregation_result(aggregation_result:, group:)
 
         result = apply_charge_model(aggregation_result:, properties:)
+        unit_amount_cents = result.unit_amount * subscription.plan.amount.currency.subunit_to_unit
 
         fee = Fee.new(
-          invoice:,
-          subscription: event.subscription,
+          subscription:,
           charge:,
           amount_cents: result.amount,
           amount_currency: subscription.plan.amount_currency,
@@ -64,12 +63,13 @@ module Fees
           payment_status: :pending,
           pay_in_advance: true,
           taxes_amount_cents: 0,
+          unit_amount_cents:,
+          precise_unit_amount: result.unit_amount,
+          grouped_by: format_grouped_by,
         )
 
-        if estimate || invoice.nil?
-          taxes_result = Fees::ApplyTaxesService.call(fee:)
-          taxes_result.raise_if_error!
-        end
+        taxes_result = Fees::ApplyTaxesService.call(fee:)
+        taxes_result.raise_if_error!
 
         fee.save! unless estimate
 
@@ -154,20 +154,29 @@ module Fees
       result.fees.each { |f| SendWebhookJob.perform_later('fee.created', f) }
     end
 
-    def update_event_metadata(aggregation_result:)
-      unless aggregation_result.current_aggregation.nil?
-        event.metadata['current_aggregation'] = aggregation_result.current_aggregation
-      end
+    def cache_aggregation_result(aggregation_result:, group:)
+      return unless aggregation_result.current_aggregation.present? ||
+                    aggregation_result.max_aggregation.present? ||
+                    aggregation_result.max_aggregation_with_proration.present?
 
-      unless aggregation_result.max_aggregation.nil?
-        event.metadata['max_aggregation'] = aggregation_result.max_aggregation
-      end
+      CachedAggregation.create!(
+        organization_id: event.organization_id,
+        event_id: event.id,
+        timestamp: event.timestamp,
+        external_subscription_id: event.external_subscription_id,
+        charge_id: charge.id,
+        group_id: group&.id,
+        current_aggregation: aggregation_result.current_aggregation,
+        max_aggregation: aggregation_result.max_aggregation,
+        max_aggregation_with_proration: aggregation_result.max_aggregation_with_proration,
+        grouped_by: format_grouped_by,
+      )
+    end
 
-      unless aggregation_result.max_aggregation_with_proration.nil?
-        event.metadata['max_aggregation_with_proration'] = aggregation_result.max_aggregation_with_proration
-      end
+    def format_grouped_by
+      return {} if charge.properties['grouped_by'].blank?
 
-      event.save!
+      charge.properties['grouped_by'].index_with { event.properties[_1] }
     end
   end
 end

@@ -39,14 +39,16 @@ class Customer < ApplicationRecord
   PAYMENT_PROVIDERS = %w[stripe gocardless adyen].freeze
 
   default_scope -> { kept }
-  sequenced scope: ->(customer) { customer.organization.customers.with_discarded }
+  sequenced scope: ->(customer) { customer.organization.customers.with_discarded },
+            lock_key: ->(customer) { customer.organization_id }
 
   validates :country, country_code: true, unless: -> { country.nil? }
   validates :document_locale, language_code: true, unless: -> { document_locale.nil? }
   validates :currency, inclusion: { in: currency_list }, allow_nil: true
   validates :external_id,
             presence: true,
-            uniqueness: { conditions: -> { where(deleted_at: nil) }, scope: :organization_id }
+            uniqueness: { conditions: -> { where(deleted_at: nil) }, scope: :organization_id },
+            unless: :deleted_at
   validates :invoice_grace_period, numericality: { greater_than_or_equal_to: 0 }, allow_nil: true
   validates :net_payment_term, numericality: { greater_than_or_equal_to: 0 }, allow_nil: true
   validates :payment_provider, inclusion: { in: PAYMENT_PROVIDERS }, allow_nil: true
@@ -113,10 +115,7 @@ class Customer < ApplicationRecord
     return if slug.present?
 
     formatted_sequential_id = format('%03d', sequential_id)
-    organization_name_substring = organization.name.first(3).upcase
-    organization_id_substring = organization.id.last(4).upcase
-    organization_slug = "#{organization_name_substring}-#{organization_id_substring}"
 
-    self.slug = "#{organization_slug}-#{formatted_sequential_id}"
+    self.slug = "#{organization.document_number_prefix}-#{formatted_sequential_id}"
   end
 end

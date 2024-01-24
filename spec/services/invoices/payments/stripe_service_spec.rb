@@ -5,10 +5,11 @@ require 'rails_helper'
 RSpec.describe Invoices::Payments::StripeService, type: :service do
   subject(:stripe_service) { described_class.new(invoice) }
 
-  let(:customer) { create(:customer) }
+  let(:customer) { create(:customer, payment_provider_code: code) }
   let(:organization) { customer.organization }
-  let(:stripe_payment_provider) { create(:stripe_provider, organization:) }
+  let(:stripe_payment_provider) { create(:stripe_provider, organization:, code:) }
   let(:stripe_customer) { create(:stripe_customer, customer:, payment_method_id: 'pm_123456') }
+  let(:code) { 'stripe_1' }
 
   let(:invoice) do
     create(
@@ -189,7 +190,7 @@ RSpec.describe Invoices::Payments::StripeService, type: :service do
     end
 
     context 'with card error on stripe' do
-      let(:customer) { create(:customer, organization:) }
+      let(:customer) { create(:customer, organization:, payment_provider_code: code) }
 
       let(:subscription) do
         create(:subscription, organization:, customer:)
@@ -219,6 +220,37 @@ RSpec.describe Invoices::Payments::StripeService, type: :service do
               error_code: nil,
             },
           )
+      end
+    end
+
+    context 'when invoice has a too small amount' do
+      let(:organization) { create(:organization) }
+      let(:customer) { create(:customer, organization:) }
+      let(:subscription) { create(:subscription, organization:, customer:) }
+
+      let(:invoice) do
+        create(
+          :invoice,
+          organization:,
+          customer:,
+          total_amount_cents: 20,
+          currency: 'EUR',
+          ready_for_payment_processing: true,
+        )
+      end
+
+      before do
+        subscription
+
+        allow(Stripe::PaymentIntent).to receive(:create)
+          .and_raise(Stripe::InvalidRequestError.new('amount_too_small', {}, code: 'amount_too_small'))
+      end
+
+      it 'does not send mark the invoice as failed' do
+        stripe_service.create
+        invoice.reload
+
+        expect(invoice).to be_pending
       end
     end
 

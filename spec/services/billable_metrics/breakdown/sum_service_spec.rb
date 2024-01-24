@@ -5,15 +5,20 @@ require 'rails_helper'
 RSpec.describe BillableMetrics::Breakdown::SumService, type: :service, transaction: false do
   subject(:service) do
     described_class.new(
-      billable_metric:,
+      event_store_class:,
+      charge:,
       subscription:,
-      group:,
       boundaries: {
         from_datetime:,
         to_datetime:,
       },
+      filters: {
+        group:,
+      },
     )
   end
+
+  let(:event_store_class) { Events::Stores::PostgresStore }
 
   let(:subscription) do
     create(
@@ -37,6 +42,13 @@ RSpec.describe BillableMetrics::Breakdown::SumService, type: :service, transacti
       aggregation_type: 'sum_agg',
       field_name: 'total_count',
       recurring: true,
+    )
+  end
+
+  let(:charge) do
+    create(
+      :standard_charge,
+      billable_metric:,
     )
   end
 

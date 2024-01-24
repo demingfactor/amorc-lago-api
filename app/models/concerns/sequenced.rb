@@ -18,7 +18,7 @@ module Sequenced
 
     def generate_sequential_id
       result = self.class.with_advisory_lock(
-        "#{self.class.name.underscore}_lock",
+        lock_key_value,
         transaction: true,
         timeout_seconds: 10.seconds,
       ) do
@@ -32,8 +32,8 @@ module Sequenced
         end
       end
 
-      # NOTE: If the application was unable to aquire the lock, the block returns false
-      raise(SequenceError, 'Unable to aquire lock on the database') unless result
+      # NOTE: If the application was unable to acquire the lock, the block returns false
+      raise(SequenceError, 'Unable to acquire lock on the database') unless result
 
       result
     end
@@ -41,11 +41,16 @@ module Sequenced
     def sequence_scope
       self.class.class_exec(self, &self.class.sequenced_options[:scope])
     end
+
+    def lock_key_value
+      "#{self.class.class_exec(self, &self.class.sequenced_lock_key) || self.class.name.underscore}_lock"
+    end
   end
 
   class_methods do
-    def sequenced(scope:)
+    def sequenced(scope:, lock_key: nil)
       self.sequenced_options = { scope: }
+      self.sequenced_lock_key = lock_key
     end
 
     def sequenced_options=(options)
@@ -54,6 +59,14 @@ module Sequenced
 
     def sequenced_options
       @sequenced_options
+    end
+
+    def sequenced_lock_key=(lock_key)
+      @sequenced_lock_key = lock_key
+    end
+
+    def sequenced_lock_key
+      @sequenced_lock_key
     end
   end
 

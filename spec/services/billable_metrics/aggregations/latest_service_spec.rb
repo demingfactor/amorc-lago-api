@@ -5,15 +5,18 @@ require 'rails_helper'
 RSpec.describe BillableMetrics::Aggregations::LatestService, type: :service do
   subject(:latest_service) do
     described_class.new(
-      billable_metric:,
+      event_store_class:,
+      charge:,
       subscription:,
-      group:,
       boundaries: {
         from_datetime:,
         to_datetime:,
       },
+      filters: { group: },
     )
   end
+
+  let(:event_store_class) { Events::Stores::PostgresStore }
 
   let(:subscription) { create(:subscription) }
   let(:organization) { subscription.organization }
@@ -26,6 +29,13 @@ RSpec.describe BillableMetrics::Aggregations::LatestService, type: :service do
       organization:,
       aggregation_type: 'latest_agg',
       field_name: 'total_count',
+    )
+  end
+
+  let(:charge) do
+    create(
+      :standard_charge,
+      billable_metric:,
     )
   end
 

@@ -57,6 +57,26 @@ RSpec.describe PaymentProviderCustomers::AdyenService, type: :service do
       end
     end
 
+    context 'when failing to generate the checkout link due to an error response' do
+      let(:payment_links_error_response) { generate(:adyen_payment_links_error_response) }
+
+      before do
+        allow(payment_links_api).to receive(:payment_links).and_return(payment_links_error_response)
+      end
+
+      it 'delivers an error webhook' do
+        expect { adyen_service_create }.to enqueue_job(SendWebhookJob)
+          .with(
+            'customer.payment_provider_error',
+            customer,
+            provider_error: {
+              message: 'There are no payment methods available for the given parameters.',
+              error_code: 'validation',
+            },
+          ).on_queue(:webhook)
+      end
+    end
+
     context 'when failing to generate the checkout link' do
       before do
         allow(payment_links_api)
@@ -76,6 +96,30 @@ RSpec.describe PaymentProviderCustomers::AdyenService, type: :service do
               error_code: nil,
             },
           )
+      end
+    end
+  end
+
+  describe '#update' do
+    it 'returns result' do
+      expect(adyen_service.update).to be_a(BaseService::Result)
+    end
+  end
+
+  describe '#success_redirect_url' do
+    subject(:success_redirect_url) { adyen_service.__send__(:success_redirect_url) }
+
+    context 'when payment provider has success redirect url' do
+      it "returns payment provider's success redirect url" do
+        expect(success_redirect_url).to eq(adyen_provider.success_redirect_url)
+      end
+    end
+
+    context 'when payment provider has no success redirect url' do
+      let(:adyen_provider) { create(:adyen_provider, success_redirect_url: nil) }
+
+      it 'returns the default success redirect url' do
+        expect(success_redirect_url).to eq(PaymentProviders::AdyenProvider::SUCCESS_REDIRECT_URL)
       end
     end
   end

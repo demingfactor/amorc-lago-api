@@ -18,7 +18,16 @@ module Fees
       init_true_up_fee(fee: result.fees.first, amount_cents: result.fees.sum(&:amount_cents))
       return result unless result.success?
 
-      result.fees.each(&:save!)
+      ActiveRecord::Base.transaction do
+        result.fees.each do |fee|
+          fee.save!
+
+          if invoice.draft? && fee.true_up_parent_fee.nil? && adjusted_fee(fee.group)
+            adjusted_fee(fee.group).update!(fee:)
+          end
+        end
+      end
+
       result
     rescue ActiveRecord::RecordInvalid => e
       result.record_validation_failure!(record: e.record)
@@ -59,6 +68,19 @@ module Fees
     end
 
     def init_fee(properties:, group: nil)
+      # NOTE: Build fee for case when there is adjusted fee and units or amount has been adjusted.
+      # Base fee creation flow handles case when only name has been adjusted
+      if invoice.draft? && adjusted_fee(group) && !adjusted_fee(group).adjusted_display_name?
+        amount_result = compute_amount_for_adjusted_fee(properties:, group:)
+        return result.fail_with_error!(amount_result.error) unless amount_result.success?
+
+        new_fee = init_adjusted_fee(amount_result, group)
+
+        result.fees << new_fee
+
+        return
+      end
+
       amount_result = compute_amount(properties:, group:)
       return result.fail_with_error!(amount_result.error) unless amount_result.success?
 
@@ -67,6 +89,7 @@ module Fees
       currency = invoice.total_amount.currency
       rounded_amount = amount_result.amount.round(currency.exponent)
       amount_cents = rounded_amount * currency.subunit_to_unit
+      unit_amount_cents = amount_result.unit_amount * currency.subunit_to_unit
 
       units = if is_current_usage && (charge.pay_in_advance? || charge.prorated?)
         amount_result.current_usage_units
@@ -92,9 +115,85 @@ module Fees
         group_id: group&.id,
         payment_status: :pending,
         taxes_amount_cents: 0,
+        unit_amount_cents:,
+        precise_unit_amount: amount_result.unit_amount,
+        amount_details: amount_result.amount_details,
       )
 
+      if adjusted_fee(group)&.adjusted_display_name?
+        new_fee.invoice_display_name = adjusted_fee(group).invoice_display_name
+      end
+
       result.fees << new_fee
+    end
+
+    def init_adjusted_fee(amount_result, group)
+      currency = invoice.total_amount.currency
+      adjusted_fee = adjusted_fee(group)
+
+      units = adjusted_fee.units
+      if adjusted_fee.adjusted_units?
+        rounded_amount = amount_result.amount.round(currency.exponent)
+        amount_cents = rounded_amount * currency.subunit_to_unit
+        unit_amount_cents = amount_result.unit_amount * currency.subunit_to_unit
+        precise_unit_amount = amount_result.unit_amount
+        amount_details = amount_result.amount_details
+      else
+        unit_amount_cents = adjusted_fee.unit_amount_cents.round
+        amount_cents = (units * unit_amount_cents).round
+        precise_unit_amount = amount_cents / (currency.subunit_to_unit * units)
+        amount_details = {}
+      end
+
+      Fee.new(
+        invoice:,
+        subscription:,
+        charge:,
+        amount_cents:,
+        amount_currency: currency,
+        fee_type: :charge,
+        invoiceable_type: 'Charge',
+        invoiceable: charge,
+        units:,
+        total_aggregated_units: units,
+        properties: boundaries.to_h,
+        events_count: 0,
+        group_id: group&.id,
+        payment_status: :pending,
+        taxes_amount_cents: 0,
+        unit_amount_cents:,
+        precise_unit_amount:,
+        amount_details:,
+        invoice_display_name: adjusted_fee.invoice_display_name,
+      )
+    end
+
+    def adjusted_fee(group)
+      @adjusted_fee ||= {}
+
+      key = group ? group.id : 'default'
+
+      return @adjusted_fee[key] if @adjusted_fee.key?(key)
+
+      @adjusted_fee[key] = AdjustedFee
+        .where(invoice:, subscription:, charge:, group:, fee_type: :charge)
+        .where("properties->>'charges_from_datetime' = ?", boundaries.charges_from_datetime&.iso8601(3))
+        .where("properties->>'charges_to_datetime' = ?", boundaries.charges_to_datetime&.iso8601(3))
+        .first
+    end
+
+    def compute_amount_for_adjusted_fee(properties:, group:)
+      adjusted_fee = adjusted_fee(group)
+      adjusted_fee_result = BaseService::Result.new
+
+      return adjusted_fee_result if adjusted_fee.adjusted_amount?
+
+      adjusted_fee_result.aggregation = adjusted_fee.units
+      adjusted_fee_result.current_usage_units = adjusted_fee.units
+      adjusted_fee_result.full_units_number = adjusted_fee.units
+      adjusted_fee_result.count = 0
+
+      apply_charge_model_service(adjusted_fee_result, properties)
     end
 
     def init_true_up_fee(fee:, amount_cents:)
@@ -128,44 +227,16 @@ module Fees
     end
 
     def aggregator(group:)
-      return @aggregator if @aggregator && !group
-
-      aggregator_service = case billable_metric.aggregation_type.to_sym
-                           when :count_agg
-                             BillableMetrics::Aggregations::CountService
-                           when :latest_agg
-                             BillableMetrics::Aggregations::LatestService
-                           when :max_agg
-                             BillableMetrics::Aggregations::MaxService
-                           when :sum_agg
-                             if charge.prorated?
-                               BillableMetrics::ProratedAggregations::SumService
-                             else
-                               BillableMetrics::Aggregations::SumService
-                             end
-                           when :unique_count_agg
-                             if charge.prorated?
-                               BillableMetrics::ProratedAggregations::UniqueCountService
-                             else
-                               BillableMetrics::Aggregations::UniqueCountService
-                             end
-                           when :recurring_count_agg
-                             BillableMetrics::Aggregations::RecurringCountService
-                           when :weighted_sum_agg
-                             BillableMetrics::Aggregations::WeightedSumService
-                           else
-                             raise(NotImplementedError)
-      end
-
-      @aggregator = aggregator_service.new(
-        billable_metric:,
+      BillableMetrics::AggregationFactory.new_instance(
+        charge:,
+        current_usage: is_current_usage,
         subscription:,
-        group:,
         boundaries: {
           from_datetime: boundaries.charges_from_datetime,
           to_datetime: boundaries.charges_to_datetime,
           charges_duration: boundaries.charges_duration,
         },
+        filters: { group: },
       )
     end
 
@@ -174,7 +245,11 @@ module Fees
                       when :standard
                         Charges::ChargeModels::StandardService
                       when :graduated
-                        Charges::ChargeModels::GraduatedService
+                        if charge.prorated?
+                          Charges::ChargeModels::ProratedGraduatedService
+                        else
+                          Charges::ChargeModels::GraduatedService
+                        end
                       when :graduated_percentage
                         Charges::ChargeModels::GraduatedPercentageService
                       when :package
@@ -198,7 +273,7 @@ module Fees
 
       # NOTE: persist current recurring value for next period
       result.quantified_events << QuantifiedEvent.find_or_initialize_by(
-        customer_id: customer.id,
+        organization_id: billable_metric.organization_id,
         external_subscription_id: subscription.external_id,
         group_id: group&.id,
         billable_metric_id: billable_metric.id,

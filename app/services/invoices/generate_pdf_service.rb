@@ -15,7 +15,7 @@ module Invoices
 
       generate_pdf if should_generate_pdf?
 
-      SendWebhookJob.perform_later('invoice.generated', invoice) if should_send_webhook?
+      SendWebhookJob.perform_later('invoice.generated', invoice)
 
       result.invoice = invoice
       result
@@ -42,16 +42,16 @@ module Invoices
 
     def template
       if invoice.one_off?
-        'invoices/one_off'
+        return 'invoices/v3/one_off' if invoice.version_number < 4
+
+        "invoices/v#{invoice.version_number}/one_off"
       elsif charge?
-        'invoices/charge'
+        return 'invoices/v3/charge' if invoice.version_number < 4
+
+        "invoices/v#{invoice.version_number}/charge"
       else
         "invoices/v#{invoice.version_number}"
       end
-    end
-
-    def should_send_webhook?
-      context == 'api'
     end
 
     def should_generate_pdf?

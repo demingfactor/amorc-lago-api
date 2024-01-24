@@ -12,8 +12,14 @@ RSpec.describe Organization, type: :model do
     )
   end
 
+  it { is_expected.to have_many(:stripe_payment_providers) }
+  it { is_expected.to have_many(:gocardless_payment_providers) }
+  it { is_expected.to have_many(:adyen_payment_providers) }
+
   it { is_expected.to have_many(:webhook_endpoints) }
   it { is_expected.to have_many(:webhooks).through(:webhook_endpoints) }
+
+  it { is_expected.to validate_inclusion_of(:default_currency).in_array(described_class.currency_list) }
 
   it_behaves_like 'paper_trail traceable'
 
