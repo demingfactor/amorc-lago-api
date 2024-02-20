@@ -12,7 +12,7 @@ module Types
 
         field :billable_metric, Types::BillableMetrics::Object, null: false
         field :charge, Types::Charges::Object, null: false
-        field :grouped_by, [String], null: true
+        field :grouped_usage, [Types::Customers::Usage::GroupedUsage], null: false
         field :groups, [Types::Customers::Usage::ChargeGroup], null: true
 
         def units
@@ -39,6 +39,12 @@ module Types
           object
             .select(&:group)
             .sort_by { |f| f.group.name }
+        end
+
+        def grouped_usage
+          return [] unless object.any? { |f| f.grouped_by.present? }
+
+          object.group_by(&:grouped_by).values
         end
       end
     end

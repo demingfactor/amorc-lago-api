@@ -11,7 +11,7 @@ module BillableMetrics
         event_store.use_from_boundary = !billable_metric.recurring
       end
 
-      def aggregate(options: {})
+      def compute_aggregation(options: {})
         aggregation = event_store.sum
 
         if options[:is_pay_in_advance] && options[:is_current_usage]
@@ -23,6 +23,42 @@ module BillableMetrics
         result.pay_in_advance_aggregation = compute_pay_in_advance_aggregation
         result.count = event_store.count
         result.options = { running_total: running_total(options) }
+        result
+      rescue ActiveRecord::StatementInvalid => e
+        result.service_failure!(code: 'aggregation_failure', message: e.message)
+      end
+
+      # NOTE: Apply the grouped_by filter to the aggregation
+      #       Result will have an aggregations attribute
+      #       containing the aggregation result of each group.
+      #
+      #       This logic is only applicable for in arrears aggregation
+      #       (exept for the current_usage update)
+      #       as pay in advance aggregation will be computed on a single group
+      #       with the grouped_by_values filter
+      def compute_grouped_by_aggregation(options: {})
+        aggregations = event_store.grouped_sum
+        return empty_results if aggregations.blank?
+
+        counts = event_store.grouped_count
+
+        result.aggregations = aggregations.map do |aggregation|
+          group_result = BaseService::Result.new
+          group_result.grouped_by = aggregation[:groups]
+
+          aggregation_value = aggregation[:value]
+
+          if options[:is_pay_in_advance] && options[:is_current_usage]
+            handle_in_advance_current_usage(aggregation_value, target_result: group_result)
+          else
+            group_result.aggregation = aggregation_value
+          end
+
+          count = counts.find { |c| c[:groups] == aggregation[:groups] } || {}
+          group_result.count = count[:value] || 0
+          group_result
+        end
+
         result
       rescue ActiveRecord::StatementInvalid => e
         result.service_failure!(code: 'aggregation_failure', message: e.message)
@@ -59,6 +95,12 @@ module BillableMetrics
 
         value = event.properties.fetch(billable_metric.field_name, 0).to_s
 
+        cached_aggregation = find_cached_aggregation(
+          with_from_datetime: from_datetime,
+          with_to_datetime: to_datetime,
+          grouped_by: grouped_by_values,
+        )
+
         unless cached_aggregation
           return_value = BigDecimal(value).negative? ? '0' : value
           handle_event_metadata(current_aggregation: value, max_aggregation: value, units_applied: value)
@@ -88,26 +130,23 @@ module BillableMetrics
         event_store.events_values(force_from: true)
       end
 
-      protected
-
       # This method fetches the latest cached aggregation in current period. If such a record exists we know that
       # previous aggregation and previous maximum aggregation are stored there. Fetching these values
       # would help us in pay in advance value calculation without iterating through all events in current period
-      def cached_aggregation
-        return @cached_aggregation if @cached_aggregation
-
+      def find_cached_aggregation(with_from_datetime:, with_to_datetime:, grouped_by: nil)
         query = CachedAggregation
           .where(organization_id: billable_metric.organization_id)
           .where(external_subscription_id: subscription.external_id)
           .where(charge_id: charge.id)
-          .from_datetime(from_datetime)
-          .to_datetime(to_datetime)
+          .from_datetime(with_from_datetime)
+          .to_datetime(with_to_datetime)
+          .where(grouped_by: grouped_by.presence || {})
           .order(timestamp: :desc)
 
         query = query.where.not(event_id: event.id) if event.present?
         query = query.where(group_id: group.id) if group
 
-        @cached_aggregation = query.first
+        query.first
       end
 
       def handle_event_metadata(current_aggregation: nil, max_aggregation: nil, units_applied: nil)

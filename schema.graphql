@@ -253,7 +253,7 @@ type ChargeUsage {
   billableMetric: BillableMetric!
   charge: Charge!
   eventsCount: Int!
-  groupedBy: [String!]
+  groupedUsage: [GroupedChargeUsage!]!
   groups: [GroupUsage!]
   units: Float!
 }
@@ -2282,6 +2282,11 @@ enum CurrencyEnum {
   KRW
 
   """
+  Kuwaiti Dinar
+  """
+  KWD
+
+  """
   Cayman Islands Dollar
   """
   KYD
@@ -3273,6 +3278,14 @@ type GroupUsage {
   key: String
   units: Float!
   value: String!
+}
+
+type GroupedChargeUsage {
+  amountCents: BigInt!
+  eventsCount: Int!
+  groupedBy: JSON
+  groups: [GroupUsage!]
+  units: Float!
 }
 
 """
@@ -4900,6 +4913,16 @@ input RevokeMembershipInput {
   id: ID!
 }
 
+"""
+Safe Organization Type
+"""
+type SafeOrganization {
+  id: ID!
+  logoUrl: String
+  name: String!
+  timezone: TimezoneEnum
+}
+
 enum StatusTypeEnum {
   active
   canceled
@@ -6011,7 +6034,7 @@ type User {
   createdAt: ISO8601DateTime!
   email: String
   id: ID!
-  organizations: [Organization!]
+  organizations: [SafeOrganization!]
   premium: Boolean!
   updatedAt: ISO8601DateTime!
 }
@@ -6061,6 +6084,8 @@ type Wallet {
   consumedCredits: Float!
   createdAt: ISO8601DateTime!
   creditsBalance: Float!
+  creditsOngoingBalance: Float!
+  creditsOngoingUsageBalance: Float!
   currency: CurrencyEnum!
   customer: Customer
   expirationAt: ISO8601DateTime
@@ -6068,6 +6093,8 @@ type Wallet {
   lastBalanceSyncAt: ISO8601DateTime
   lastConsumedCreditAt: ISO8601DateTime
   name: String
+  ongoingBalanceCents: BigInt!
+  ongoingUsageBalanceCents: BigInt!
   rateAmount: Float!
   recurringTransactionRules: [RecurringTransactionRule!]
   status: WalletStatusEnum!

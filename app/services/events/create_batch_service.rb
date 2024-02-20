@@ -2,7 +2,7 @@
 
 module Events
   class CreateBatchService < BaseService
-    MAX_LENGTH = 100
+    MAX_LENGTH = ENV.fetch("LAGO_EVENTS_BATCH_MAX_LENGTH", 100).to_i
 
     def initialize(organization:, events_params:, timestamp:, metadata:)
       @organization = organization
@@ -73,7 +73,7 @@ module Events
           external_customer_id: event.external_customer_id,
           external_subscription_id: event.external_subscription_id,
           transaction_id: event.transaction_id,
-          timestamp: event.timestamp,
+          timestamp: event.timestamp.to_f,
           code: event.code,
           properties: event.properties,
         }.to_json,

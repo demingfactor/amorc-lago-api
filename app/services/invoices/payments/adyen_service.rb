@@ -30,8 +30,8 @@ module Invoices
         res = create_adyen_payment
         return result unless res
 
-        handle_adyen_response(res)
-        return result unless result.success?
+        adyen_success, _adyen_error = handle_adyen_response(res)
+        return result unless adyen_success
 
         payment = Payment.new(
           invoice:,
@@ -51,8 +51,12 @@ module Invoices
         result
       end
 
-      def update_payment_status(provider_payment_id:, status:)
-        payment = Payment.find_by(provider_payment_id:)
+      def update_payment_status(provider_payment_id:, status:, metadata: {})
+        payment = if metadata[:payment_type] == 'one-time'
+          create_payment(provider_payment_id:, metadata:)
+        else
+          Payment.find_by(provider_payment_id:)
+        end
         return result.not_found_failure!(resource: 'adyen_payment') unless payment
 
         result.payment = payment
@@ -69,11 +73,44 @@ module Invoices
         result.fail_with_error!(e)
       end
 
+      def generate_payment_url
+        return result unless should_process_payment?
+
+        res = client.checkout.payment_links_api.payment_links(Lago::Adyen::Params.new(payment_url_params).to_h)
+        adyen_success, adyen_error = handle_adyen_response(res)
+        result.service_failure!(code: adyen_error.code, message: adyen_error.msg) unless adyen_success
+
+        return result unless result.success?
+
+        result.payment_url = res.response['url']
+
+        result
+      rescue Adyen::AdyenError => e
+        deliver_error_webhook(e)
+
+        result.service_failure!(code: e.code, message: e.msg)
+      end
+
       private
 
       attr_accessor :invoice
 
       delegate :organization, :customer, to: :invoice
+
+      def create_payment(provider_payment_id:, metadata:)
+        @invoice = Invoice.find(metadata[:lago_invoice_id])
+
+        increment_payment_attempts
+
+        Payment.new(
+          invoice:,
+          payment_provider_id: adyen_payment_provider.id,
+          payment_provider_customer_id: customer.adyen_customer.id,
+          amount_cents: invoice.total_amount_cents,
+          amount_currency: invoice.currency.upcase,
+          provider_payment_id:,
+        )
+      end
 
       def should_process_payment?
         return false if invoice.succeeded? || invoice.voided?
@@ -88,6 +125,10 @@ module Invoices
           env: adyen_payment_provider.environment,
           live_url_prefix: adyen_payment_provider.live_prefix,
         )
+      end
+
+      def success_redirect_url
+        adyen_payment_provider.success_redirect_url.presence || ::PaymentProviders::AdyenProvider::SUCCESS_REDIRECT_URL
       end
 
       def adyen_payment_provider
@@ -114,8 +155,7 @@ module Invoices
       rescue Adyen::AdyenError => e
         deliver_error_webhook(e)
         update_invoice_payment_status(payment_status: :failed, deliver_webhook: false)
-
-        raise
+        raise e
       end
 
       def payment_method_params
@@ -140,6 +180,31 @@ module Invoices
           merchantAccount: adyen_payment_provider.merchant_account,
           shopperInteraction: 'ContAuth',
           recurringProcessingModel: 'UnscheduledCardOnFile',
+        }
+        prms[:shopperEmail] = customer.email if customer.email
+        prms
+      end
+
+      def payment_url_params
+        prms = {
+          reference: invoice.number,
+          amount: {
+            value: invoice.total_amount_cents,
+            currency: invoice.currency.upcase,
+          },
+          merchantAccount: adyen_payment_provider.merchant_account,
+          returnUrl: success_redirect_url,
+          shopperReference: customer.external_id,
+          storePaymentMethodMode: 'enabled',
+          recurringProcessingModel: 'UnscheduledCardOnFile',
+          expiresAt: Time.current + 1.day,
+          metadata: {
+            lago_customer_id: customer.id,
+            lago_invoice_id: invoice.id,
+            invoice_issuing_date: invoice.issuing_date.iso8601,
+            invoice_type: invoice.invoice_type,
+            payment_type: 'one-time',
+          },
         }
         prms[:shopperEmail] = customer.email if customer.email
         prms

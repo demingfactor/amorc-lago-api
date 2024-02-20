@@ -12,6 +12,8 @@ module BillableMetrics
         @filters = filters
         @group = filters[:group]
         @event = filters[:event]
+        @grouped_by = filters[:grouped_by]
+        @grouped_by_values = filters[:grouped_by_values]
 
         @boundaries = boundaries
 
@@ -19,7 +21,19 @@ module BillableMetrics
       end
 
       def aggregate(options: {})
-        raise(NotImplementedError)
+        if grouped_by.present?
+          compute_grouped_by_aggregation(options:)
+        else
+          compute_aggregation(options:)
+        end
+      end
+
+      def compute_aggregation(options: {})
+        raise NotImplementedError
+      end
+
+      def compute_grouped_by_aggregation(options: {})
+        raise NotImplementedError
       end
 
       def per_event_aggregation
@@ -30,7 +44,15 @@ module BillableMetrics
 
       protected
 
-      attr_accessor :event_store_class, :charge, :subscription, :filters, :group, :event, :boundaries
+      attr_accessor :event_store_class,
+                    :charge,
+                    :subscription,
+                    :filters,
+                    :group,
+                    :event,
+                    :boundaries,
+                    :grouped_by,
+                    :grouped_by_values
 
       delegate :billable_metric, to: :charge
 
@@ -41,7 +63,7 @@ module BillableMetrics
           code: billable_metric.code,
           subscription:,
           boundaries:,
-          filters: { group: },
+          filters:,
         )
       end
 
@@ -53,35 +75,38 @@ module BillableMetrics
         boundaries[:to_datetime]
       end
 
-      def count_unique_group_scope(events)
-        events = events.where('quantified_events.properties @> ?', { group.key.to_s => group.value }.to_json)
-        return events unless group.parent
+      def handle_in_advance_current_usage(total_aggregation, target_result: result)
+        cached_aggregation = find_cached_aggregation(
+          with_from_datetime: from_datetime,
+          with_to_datetime: to_datetime,
+          grouped_by: target_result.grouped_by,
+        )
 
-        events.where('quantified_events.properties @> ?', { group.parent.key.to_s => group.parent.value }.to_json)
-      end
-
-      def handle_in_advance_current_usage(total_aggregation)
         if cached_aggregation
           aggregation = total_aggregation -
                         BigDecimal(cached_aggregation.current_aggregation) +
                         BigDecimal(cached_aggregation.max_aggregation)
 
-          result.aggregation = aggregation
+          target_result.aggregation = aggregation
         else
-          result.aggregation = total_aggregation
+          target_result.aggregation = total_aggregation
         end
 
-        result.current_usage_units = total_aggregation
+        target_result.current_usage_units = total_aggregation
 
-        result.aggregation = 0 if result.aggregation.negative?
-        result.current_usage_units = 0 if result.current_usage_units.negative?
+        target_result.aggregation = 0 if target_result.aggregation.negative?
+        target_result.current_usage_units = 0 if target_result.current_usage_units.negative?
       end
 
-      def get_cached_aggregation_in_interval(from_datetime:, to_datetime:)
-        @from_datetime = from_datetime
-        @to_datetime = to_datetime
+      def empty_results
+        empty_result = BaseService::Result.new
+        empty_result.grouped_by = grouped_by.index_with { nil }
+        empty_result.aggregation = 0
+        empty_result.count = 0
+        empty_result.current_usage_units = 0
 
-        cached_aggregation
+        result.aggregations = [empty_result]
+        result
       end
     end
   end

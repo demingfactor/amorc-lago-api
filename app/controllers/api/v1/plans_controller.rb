@@ -21,7 +21,7 @@ module Api
 
       def update
         plan = current_organization.plans.parents.find_by(code: params[:code])
-        result = ::Plans::UpdateService.call(plan:, params: input_params)
+        result = ::Plans::UpdateService.call(plan:, params: input_params.to_h.deep_symbolize_keys)
 
         if result.success?
           render_plan(result.plan)
@@ -60,7 +60,7 @@ module Api
             ::V1::PlanSerializer,
             collection_name: 'plans',
             meta: pagination_metadata(plans),
-            includes: %i[charges taxes],
+            includes: %i[charges taxes minimum_commitment],
           ),
         )
       end
@@ -80,6 +80,12 @@ module Api
           :pay_in_advance,
           :bill_charges_monthly,
           tax_codes: [],
+          minimum_commitment: [
+            :id,
+            :invoice_display_name,
+            :amount_cents,
+            { tax_codes: [] },
+          ],
           charges: [
             :id,
             :invoice_display_name,
@@ -109,7 +115,7 @@ module Api
           json: ::V1::PlanSerializer.new(
             plan,
             root_name: 'plan',
-            includes: %i[charges taxes],
+            includes: %i[charges taxes minimum_commitment],
           ),
         )
       end

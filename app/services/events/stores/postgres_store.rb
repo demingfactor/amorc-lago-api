@@ -5,6 +5,7 @@ module Events
     class PostgresStore < BaseStore
       def events(force_from: false)
         scope = Event.where(external_subscription_id: subscription.external_id)
+          .where(organization_id: subscription.organization.id)
           .where(code:)
           .order(timestamp: :asc)
 
@@ -35,6 +36,23 @@ module Events
 
       def last_event
         events.last
+      end
+
+      def grouped_last_event
+        groups = sanitized_grouped_by
+
+        sql = events
+          .reorder(Arel.sql((groups + ['events.timestamp DESC, created_at DESC']).join(', ')))
+          .select(
+            [
+              "DISTINCT ON (#{groups.join(', ')}) #{groups.join(', ')}",
+              'events.timestamp',
+              "(#{sanitized_propery_name})::numeric AS value",
+            ].join(', '),
+          )
+          .to_sql
+
+        prepare_grouped_result(Event.connection.select_all(sql).rows, timestamp: true)
       end
 
       def prorated_events_values(total_duration)
@@ -75,7 +93,7 @@ module Events
         groups = sanitized_grouped_by
 
         sql = events
-          .reorder(Arel.sql((groups + ['events.timestamp DESC']).join(', ')))
+          .reorder(Arel.sql((groups + ['events.timestamp DESC, created_at DESC']).join(', ')))
           .select(
             "DISTINCT ON (#{groups.join(', ')}) #{groups.join(', ')}, (#{sanitized_propery_name})::numeric AS value",
           )
@@ -118,6 +136,28 @@ module Events
         ).first['sum_result']
       end
 
+      def grouped_prorated_sum(period_duration:, persisted_duration: nil)
+        ratio = if persisted_duration
+          persisted_duration.fdiv(period_duration)
+        else
+          duration_ratio_sql('events.timestamp', to_datetime, period_duration)
+        end
+
+        sum_sql = <<-SQL
+          #{sanitized_grouped_by.join(', ')},
+          SUM(
+            (#{sanitized_propery_name})::numeric * (#{ratio})::numeric
+          ) AS sum_result
+        SQL
+
+        sql = events.reorder('')
+          .group(sanitized_grouped_by)
+          .select(sum_sql)
+          .to_sql
+
+        prepare_grouped_result(Event.connection.select_all(sql).rows)
+      end
+
       def sum_date_breakdown
         date_field = Utils::TimezoneService.date_in_customer_timezone_sql(customer, 'events.timestamp')
 
@@ -145,6 +185,39 @@ module Events
 
         result = ActiveRecord::Base.connection.select_one(sql)
         result['aggregation']
+      end
+
+      def grouped_weighted_sum(initial_values: [])
+        query = Events::Stores::Postgres::WeightedSumQuery.new(store: self)
+
+        # NOTE: build the list of initial values for each groups
+        #       from the events in the period
+        formated_initial_values = grouped_count.map do |group|
+          value = 0
+          previous_group = initial_values.find { |g| g[:groups] == group[:groups] }
+          value = previous_group[:value] if previous_group
+          { groups: group[:groups], value: }
+        end
+
+        # NOTE: add the initial values for groups that are not in the events
+        initial_values.each do |intial_value|
+          next if formated_initial_values.find { |g| g[:groups] == intial_value[:groups] }
+
+          formated_initial_values << intial_value
+        end
+        return [] if formated_initial_values.empty?
+
+        sql = ActiveRecord::Base.sanitize_sql_for_conditions(
+          [
+            query.grouped_query(initial_values: formated_initial_values),
+            {
+              from_datetime:,
+              to_datetime: to_datetime.ceil,
+            },
+          ],
+        )
+
+        prepare_grouped_result(Event.connection.select_all(sql).rows)
       end
 
       # NOTE: not used in production, only for debug purpose to check the computed values before aggregation
@@ -210,14 +283,19 @@ module Events
       # NOTE: returns the values for each groups
       #       The result format will be an array of hash with the format:
       #       [{ groups: { 'cloud' => 'aws', 'region' => 'us_east_1' }, value: 12.9 }, ...]
-      def prepare_grouped_result(rows)
+      def prepare_grouped_result(rows, timestamp: false)
         rows.map do |row|
-          groups = row[...-1].map(&:presence)
+          last_group = timestamp ? -2 : -1
+          groups = row[...last_group].map(&:presence)
 
-          {
+          result = {
             groups: grouped_by.each_with_object({}).with_index { |(g, r), i| r.merge!(g => groups[i]) },
             value: row.last,
           }
+
+          result[:timestamp] = row[-2] if timestamp
+
+          result
         end
       end
     end

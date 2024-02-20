@@ -43,9 +43,10 @@ module Plans
         end
 
         process_charges(plan, params[:charges]) if params[:charges]
+        process_minimum_commitment(plan, params[:minimum_commitment]) if params[:minimum_commitment] && License.premium?
       end
 
-      result.plan = plan
+      result.plan = plan.reload
       result
     rescue ActiveRecord::RecordInvalid => e
       result.record_validation_failure!(record: e.record)
@@ -71,9 +72,14 @@ module Plans
         charge_model: charge_model(params),
         pay_in_advance: params[:pay_in_advance] || false,
         prorated: params[:prorated] || false,
-        properties: params[:properties].presence || Charges::BuildDefaultPropertiesService.call(charge_model(params)),
         group_properties: (params[:group_properties] || []).map { |gp| GroupProperty.new(gp) },
       )
+
+      properties = params[:properties].presence || Charges::BuildDefaultPropertiesService.call(charge.charge_model)
+      charge.properties = Charges::FilterChargeModelPropertiesService.call(
+        charge_model: charge.charge_model,
+        properties:,
+      ).properties
 
       if License.premium?
         charge.invoiceable = params[:invoiceable] unless params[:invoiceable].nil?
@@ -97,6 +103,27 @@ module Plans
       model
     end
 
+    def process_minimum_commitment(plan, params)
+      if params.present?
+        minimum_commitment = plan.minimum_commitment || Commitment.new(plan:, commitment_type: 'minimum_commitment')
+
+        minimum_commitment.amount_cents = params[:amount_cents] if params.key?(:amount_cents)
+        minimum_commitment.invoice_display_name = params[:invoice_display_name] if params.key?(:invoice_display_name)
+        minimum_commitment.save!
+      end
+      plan.minimum_commitment.destroy! if params.blank? && plan.minimum_commitment
+
+      if params[:tax_codes]
+        taxes_result = Commitments::ApplyTaxesService.call(
+          commitment: minimum_commitment,
+          tax_codes: params[:tax_codes],
+        )
+        taxes_result.raise_if_error!
+      end
+
+      minimum_commitment
+    end
+
     def process_charges(plan, params_charges)
       created_charges_ids = []
 
@@ -114,12 +141,16 @@ module Plans
             return group_result if group_result.error
           end
 
-          properties = payload_charge.delete(:properties)
+          properties = payload_charge.delete(:properties).presence || Charges::BuildDefaultPropertiesService.call(
+            payload_charge[:charge_model],
+          )
+
           charge.update!(
             invoice_display_name: payload_charge[:invoice_display_name],
-            properties: properties.presence || Charges::BuildDefaultPropertiesService.call(
-              payload_charge[:charge_model],
-            ),
+            properties: Charges::FilterChargeModelPropertiesService.call(
+              charge_model: charge.charge_model,
+              properties:,
+            ).properties,
           )
 
           tax_codes = payload_charge.delete(:tax_codes)

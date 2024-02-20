@@ -30,8 +30,8 @@ module PaymentProviderCustomers
       return result.not_found_failure!(resource: 'adyen_payment_provider') unless adyen_payment_provider
 
       res = client.checkout.payment_links_api.payment_links(Lago::Adyen::Params.new(payment_link_params).to_h)
-      handle_adyen_response(res)
-
+      adyen_success, adyen_error = handle_adyen_response(res)
+      result.service_failure!(code: adyen_error.code, message: adyen_error.msg) unless adyen_success
       return result unless result.success?
 
       result.checkout_url = res.response['url']
@@ -115,9 +115,9 @@ module PaymentProviderCustomers
         shopperReference: customer.external_id,
         storePaymentMethodMode: 'enabled',
         recurringProcessingModel: 'UnscheduledCardOnFile',
-        expiresAt: Time.current + 70.days,
+        expiresAt: Time.current + 69.days,
       }
-      prms[:shopperEmail] = customer.email if customer.email
+      prms[:shopperEmail] = customer.email&.strip&.split(',')&.first if customer.email
       prms
     end
 

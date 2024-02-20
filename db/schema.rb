@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.0].define(version: 2024_01_23_104811) do
+ActiveRecord::Schema[7.0].define(version: 2024_02_05_160647) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pgcrypto"
   enable_extension "plpgsql"
@@ -88,6 +88,7 @@ ActiveRecord::Schema[7.0].define(version: 2024_01_23_104811) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.uuid "group_id"
+    t.jsonb "grouped_by", default: {}, null: false
     t.index ["charge_id"], name: "index_adjusted_fees_on_charge_id"
     t.index ["fee_id"], name: "index_adjusted_fees_on_fee_id"
     t.index ["group_id"], name: "index_adjusted_fees_on_group_id"
@@ -608,7 +609,6 @@ ActiveRecord::Schema[7.0].define(version: 2024_01_23_104811) do
     t.datetime "voided_at"
     t.integer "organization_sequential_id", default: 0, null: false
     t.boolean "ready_to_be_refreshed", default: false, null: false
-    t.index "organization_id, organization_sequential_id, ((date_trunc('month'::text, created_at))::date)", name: "unique_organization_sequential_id", unique: true, where: "(organization_sequential_id <> 0)"
     t.index ["customer_id", "sequential_id"], name: "index_invoices_on_customer_id_and_sequential_id", unique: true
     t.index ["customer_id"], name: "index_invoices_on_customer_id"
     t.index ["organization_id"], name: "index_invoices_on_organization_id"
@@ -670,11 +670,10 @@ ActiveRecord::Schema[7.0].define(version: 2024_01_23_104811) do
     t.string "tax_identification_number"
     t.integer "net_payment_term", default: 0, null: false
     t.string "default_currency", default: "USD", null: false
+    t.boolean "eu_tax_management", default: false
     t.integer "document_numbering", default: 0, null: false
     t.string "document_number_prefix"
-    t.boolean "eu_tax_management", default: false
     t.boolean "clickhouse_aggregation", default: false, null: false
-    t.boolean "credits_auto_refreshed", default: false, null: false
     t.index ["api_key"], name: "index_organizations_on_api_key", unique: true
     t.check_constraint "invoice_grace_period >= 0", name: "check_organizations_on_invoice_grace_period"
     t.check_constraint "net_payment_term >= 0", name: "check_organizations_on_net_payment_term"
@@ -777,6 +776,7 @@ ActiveRecord::Schema[7.0].define(version: 2024_01_23_104811) do
     t.datetime "deleted_at"
     t.uuid "group_id"
     t.uuid "organization_id", null: false
+    t.jsonb "grouped_by", default: {}, null: false
     t.index ["billable_metric_id"], name: "index_quantified_events_on_billable_metric_id"
     t.index ["deleted_at"], name: "index_quantified_events_on_deleted_at"
     t.index ["external_id"], name: "index_quantified_events_on_external_id"
@@ -900,6 +900,10 @@ ActiveRecord::Schema[7.0].define(version: 2024_01_23_104811) do
     t.string "balance_currency", null: false
     t.bigint "consumed_amount_cents", default: 0, null: false
     t.string "consumed_amount_currency", null: false
+    t.bigint "ongoing_balance_cents", default: 0, null: false
+    t.bigint "ongoing_usage_balance_cents", default: 0, null: false
+    t.decimal "credits_ongoing_balance", precision: 30, scale: 5, default: "0.0", null: false
+    t.decimal "credits_ongoing_usage_balance", precision: 30, scale: 5, default: "0.0", null: false
     t.index ["customer_id"], name: "index_wallets_on_customer_id"
   end
 

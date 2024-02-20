@@ -8,9 +8,9 @@ class CreateEventsRawMv < ActiveRecord::Migration[7.0]
         external_customer_id,
         external_subscription_id,
         transaction_id,
-        timestamp,
+        toDateTime64(timestamp, 3) as timestamp,
         code,
-        cast(JSONExtractKeysAndValuesRaw(properties), 'Map(String, String)') as properties
+        JSONExtract(properties, 'Map(String, String)') as properties
       FROM events_raw_queue
     SQL
 

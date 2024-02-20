@@ -9,8 +9,8 @@ module BillableMetrics
         event_store.aggregation_property = billable_metric.field_name
       end
 
-      def aggregate(options: {})
-        aggregation = compute_aggregation.ceil(5)
+      def compute_aggregation(options: {})
+        aggregation = compute_single_aggregation.ceil(5)
 
         if options[:is_pay_in_advance] && options[:is_current_usage]
           handle_in_advance_current_usage(aggregation)
@@ -24,11 +24,46 @@ module BillableMetrics
         result
       end
 
+      # NOTE: Apply the grouped_by filter to the aggregation
+      #       Result will have an aggregations attribute
+      #       containing the aggregation result of each group.
+      #
+      #       This logic is only applicable for in arrears aggregation
+      #       (exept for the current_usage update)
+      #       as pay in advance aggregation will be computed on a single group
+      #       with the grouped_by_values filter
+      def compute_grouped_by_aggregation(options: {})
+        aggregations = compute_grouped_aggregations
+        return empty_results if aggregations.blank?
+
+        result.aggregations = aggregations.map do |aggregation|
+          group_result = BaseService::Result.new
+          group_result.grouped_by = aggregation[:groups]
+
+          if options[:is_pay_in_advance] && options[:is_current_usage]
+            handle_in_advance_current_usage(aggregation[:value], target_result: group_result)
+          else
+            group_result.aggregation = aggregation[:value]
+          end
+
+          group_result.count = aggregation[:value]
+          group_result
+        end
+
+        result
+      end
+
       def compute_pay_in_advance_aggregation
         return 0 unless event
         return 0 if event.properties.blank?
 
         newly_applied_units = (operation_type == :add) ? 1 : 0
+
+        cached_aggregation = find_cached_aggregation(
+          with_from_datetime: from_datetime,
+          with_to_datetime: to_datetime,
+          grouped_by: grouped_by_values,
+        )
 
         unless cached_aggregation
           handle_event_metadata(
@@ -71,20 +106,16 @@ module BillableMetrics
         (0...added_query.count).map { |_| 1 }
       end
 
-      protected
-
       # This method fetches the latest cached aggregation in current period. If such a record exists we know that
       # previous aggregation and previous maximum aggregation are stored there. Fetching these values
       # would help us in pay in advance value calculation without iterating through all events in current period
-      def cached_aggregation
-        return @cached_aggregation if @cached_aggregation
-
+      def find_cached_aggregation(with_from_datetime:, with_to_datetime:, grouped_by: nil)
         query = CachedAggregation
           .where(organization_id: billable_metric.organization_id)
           .where(external_subscription_id: subscription.external_id)
           .where(charge_id: charge.id)
-          .from_datetime(from_datetime)
-          .to_datetime(to_datetime)
+          .from_datetime(with_from_datetime)
+          .to_datetime(with_to_datetime)
           .order(timestamp: :desc)
 
         query = query
@@ -93,16 +124,18 @@ module BillableMetrics
             'INNER JOIN quantified_events ON quantified_events.organization_id = cached_aggregations.organization_id',
             'quantified_events.external_subscription_id = cached_aggregations.external_subscription_id',
             'quantified_events.billable_metric_id = charges.billable_metric_id',
+            'quantified_events.grouped_by = cached_aggregations.grouped_by',
           ].join(' AND '))
           .where(quantified_events: { external_id: event_store.events_values })
-          .where('quantified_events.added_at::timestamp(0) >= ?', from_datetime)
-          .where('quantified_events.added_at::timestamp(0) <= ?', to_datetime)
+          .where('quantified_events.added_at::timestamp(0) >= ?', with_from_datetime)
+          .where('quantified_events.added_at::timestamp(0) <= ?', with_to_datetime)
           .where('quantified_events.removed_at::timestamp(0) IS NULL')
           .or(
             query
-              .where('quantified_events.removed_at::timestamp(0) >= ?', from_datetime)
-              .where('quantified_events.removed_at::timestamp(0) <= ?', to_datetime),
+              .where('quantified_events.removed_at::timestamp(0) >= ?', with_from_datetime)
+              .where('quantified_events.removed_at::timestamp(0) <= ?', with_to_datetime),
           )
+          .where(grouped_by: grouped_by.presence || {})
 
         # TODO: event_id for clickhouse events
         query = query.where.not(event_id: event.id) if event.present?
@@ -112,8 +145,17 @@ module BillableMetrics
             .where('quantified_events.group_id = cached_aggregations.group_id')
         end
 
-        @cached_aggregation = query.first
+        query.first
       end
+
+      def count_unique_group_scope(events)
+        events = events.where('quantified_events.properties @> ?', { group.key.to_s => group.value }.to_json)
+        return events unless group.parent
+
+        events.where('quantified_events.properties @> ?', { group.parent.key.to_s => group.parent.value }.to_json)
+      end
+
+      protected
 
       def operation_type
         @operation_type ||= event.properties.fetch('operation_type', 'add')&.to_sym
@@ -125,8 +167,14 @@ module BillableMetrics
         result.units_applied = units_applied unless units_applied.nil?
       end
 
-      def compute_aggregation
+      def compute_single_aggregation
         ActiveRecord::Base.connection.execute(aggregation_query).first['aggregation_result']
+      end
+
+      def compute_grouped_aggregations
+        event_store.prepare_grouped_result(
+          ActiveRecord::Base.connection.select_all(grouped_aggregation_query).rows,
+        )
       end
 
       def aggregation_query
@@ -141,6 +189,52 @@ module BillableMetrics
         ]
 
         "SELECT (#{queries.map { |q| "COALESCE((#{q}), 0)" }.join(' + ')}) AS aggregation_result"
+      end
+
+      def grouped_aggregation_query
+        groups = grouped_by.map do |group|
+          ActiveRecord::Base.sanitize_sql_for_conditions(
+            ['quantified_events.grouped_by->>?', group],
+          )
+        end
+        group_names = groups.map.with_index { |_, index| "g_#{index}" }.join(', ')
+
+        # NOTE: Billed on the full period
+        persisted = persisted_query
+          .select(
+            [
+              groups.map.with_index { |group, index| "#{group} AS g_#{index}" },
+              'SUM(1)::numeric AS group_sum',
+            ].flatten.join(', '),
+          )
+          .group(groups.join(', '))
+          .to_sql
+
+        # NOTE: Added during the period
+        added = added_query
+          .select(
+            [
+              groups.map.with_index { |group, index| "#{group} AS g_#{index}" },
+              'SUM(1)::numeric AS group_sum',
+            ].flatten.join(', '),
+          )
+          .group(groups.join(', '))
+          .to_sql
+
+        <<-SQL
+          with persisted AS (#{persisted}),
+          added AS (#{added})
+
+          SELECT
+            #{group_names},
+            SUM(group_sum)
+          FROM (
+            (select * from persisted)
+          UNION ALL
+            (select * from added)
+          ) grouped_count
+          GROUP BY #{group_names}
+        SQL
       end
 
       def persisted_query

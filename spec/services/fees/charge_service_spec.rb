@@ -43,7 +43,6 @@ RSpec.describe Fees::ChargeService do
       billable_metric:,
       properties: {
         amount: '20',
-        amount_currency: 'EUR',
       },
     )
   end
@@ -65,6 +64,184 @@ RSpec.describe Fees::ChargeService do
           events_count: 0,
           payment_status: 'pending',
         )
+      end
+
+      context 'with grouped standard charge' do
+        let(:charge) do
+          create(
+            :standard_charge,
+            plan: subscription.plan,
+            billable_metric:,
+            properties: {
+              amount: '20',
+              grouped_by: ['cloud'],
+            },
+          )
+        end
+
+        let(:billable_metric) do
+          create(:billable_metric, organization:, aggregation_type: 'sum_agg', field_name: 'value')
+        end
+
+        context 'without events' do
+          it 'creates an empty fee' do
+            result = charge_subscription_service.create
+            expect(result).to be_success
+            expect(result.fees.count).to eq(1)
+
+            fee = result.fees.first
+            expect(fee).to have_attributes(
+              id: String,
+              invoice_id: invoice.id,
+              charge_id: charge.id,
+              amount_cents: 0,
+              amount_currency: 'EUR',
+              units: 0,
+              unit_amount_cents: 0,
+              precise_unit_amount: 0,
+              grouped_by: { 'cloud' => nil },
+            )
+          end
+        end
+
+        context 'with events' do
+          before do
+            create(
+              :event,
+              organization: subscription.organization,
+              customer: subscription.customer,
+              subscription:,
+              code: charge.billable_metric.code,
+              timestamp: DateTime.parse('2022-03-16'),
+              properties: { cloud: 'aws', value: 10 },
+            )
+
+            create(
+              :event,
+              organization: subscription.organization,
+              customer: subscription.customer,
+              subscription:,
+              code: charge.billable_metric.code,
+              timestamp: DateTime.parse('2022-03-16'),
+              properties: { cloud: 'aws', value: 5 },
+            )
+
+            create(
+              :event,
+              organization: subscription.organization,
+              customer: subscription.customer,
+              subscription:,
+              code: charge.billable_metric.code,
+              timestamp: DateTime.parse('2022-03-16'),
+              properties: { cloud: 'gcp', value: 10 },
+            )
+          end
+
+          it 'creates a fee for each group' do
+            result = charge_subscription_service.create
+            expect(result).to be_success
+            expect(result.fees.count).to eq(2)
+
+            fee1 = result.fees.find { |f| f.grouped_by['cloud'] == 'aws' }
+            expect(fee1).to have_attributes(
+              id: String,
+              invoice_id: invoice.id,
+              charge_id: charge.id,
+              amount_cents: 30_000,
+              amount_currency: 'EUR',
+              units: 15,
+              unit_amount_cents: 2000,
+              precise_unit_amount: 20,
+              grouped_by: { 'cloud' => 'aws' },
+            )
+
+            fee2 = result.fees.find { |f| f.grouped_by['cloud'] == 'gcp' }
+            expect(fee2).to have_attributes(
+              id: String,
+              invoice_id: invoice.id,
+              charge_id: charge.id,
+              amount_cents: 20_000,
+              amount_currency: 'EUR',
+              units: 10,
+              unit_amount_cents: 2000,
+              precise_unit_amount: 20,
+              grouped_by: { 'cloud' => 'gcp' },
+            )
+          end
+
+          context 'with adjusted fee' do
+            let(:adjusted_fee) do
+              create(
+                :adjusted_fee,
+                invoice:,
+                subscription:,
+                charge:,
+                properties:,
+                fee_type: :charge,
+                adjusted_units: true,
+                adjusted_amount: false,
+                units: 3,
+                grouped_by: { 'cloud' => 'aws' },
+              )
+            end
+
+            let(:properties) do
+              {
+                charges_from_datetime: boundaries[:charges_from_datetime],
+                charges_to_datetime: boundaries[:charges_to_datetime],
+              }
+            end
+
+            before do
+              adjusted_fee
+              invoice.draft!
+            end
+
+            it 'creates a fee for each group' do
+              result = charge_subscription_service.create
+              expect(result).to be_success
+              expect(result.fees.count).to eq(2)
+
+              fee1 = result.fees.find { |f| f.grouped_by['cloud'] == 'aws' }
+              expect(fee1).to have_attributes(
+                id: String,
+                invoice_id: invoice.id,
+                charge_id: charge.id,
+                amount_cents: 6_000,
+                amount_currency: 'EUR',
+                units: 3,
+                unit_amount_cents: 2000,
+                precise_unit_amount: 20,
+                grouped_by: { 'cloud' => 'aws' },
+              )
+
+              fee2 = result.fees.find { |f| f.grouped_by['cloud'] == 'gcp' }
+              expect(fee2).to have_attributes(
+                id: String,
+                invoice_id: invoice.id,
+                charge_id: charge.id,
+                amount_cents: 20_000,
+                amount_currency: 'EUR',
+                units: 10,
+                unit_amount_cents: 2000,
+                precise_unit_amount: 20,
+                grouped_by: { 'cloud' => 'gcp' },
+              )
+            end
+          end
+
+          context 'with recurring weighted sum aggregation' do
+            let(:billable_metric) { create(:weighted_sum_billable_metric, :recurring, organization:) }
+
+            it 'creates a fee and a quantified event per group' do
+              result = charge_subscription_service.create
+              expect(result).to be_success
+
+              expect(result.fees.count).to eq(2)
+              expect(result.quantified_events.count).to eq(2)
+            end
+          end
+        end
       end
 
       context 'with graduated charge model' do

@@ -46,6 +46,8 @@ class Fee < ApplicationRecord
   scope :subscription_kind, -> { where(fee_type: :subscription) }
   scope :charge_kind, -> { where(fee_type: :charge) }
 
+  scope :positive_units, -> { where('units > ?', 0) }
+
   # NOTE: pay_in_advance fees are not be linked to any invoice, but add_on fees does not have any subscriptions
   #       so we need a bit of logic to find the fee in the right organization scope
   scope :from_organization,
@@ -98,6 +100,16 @@ class Fee < ApplicationRecord
 
   def group_name
     charge&.group_properties&.find_by(group:)&.invoice_display_name || group&.name
+  end
+
+  def invoice_sorting_clause
+    base_clause = "#{invoice_name} #{group_name}".downcase
+
+    return base_clause unless charge?
+    return base_clause unless charge.standard?
+    return base_clause if charge.properties['grouped_by'].blank?
+
+    "#{invoice_name} #{grouped_by.values.join} #{group_name}".downcase
   end
 
   def currency

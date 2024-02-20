@@ -3,14 +3,14 @@
 class Wallet < ApplicationRecord
   include PaperTrailTraceable
 
-  belongs_to :customer
+  belongs_to :customer, -> { with_discarded }
 
   has_one :organization, through: :customer
 
   has_many :wallet_transactions
   has_many :recurring_transaction_rules
 
-  monetize :balance_cents
+  monetize :balance_cents, :ongoing_balance_cents, :ongoing_usage_balance_cents
   monetize :consumed_amount_cents
 
   STATUSES = [

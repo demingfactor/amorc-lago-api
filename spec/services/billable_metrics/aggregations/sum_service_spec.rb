@@ -12,19 +12,18 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
         from_datetime:,
         to_datetime:,
       },
-      filters: {
-        group:,
-        event: pay_in_advance_event,
-      },
+      filters:,
     )
   end
 
   let(:event_store_class) { Events::Stores::PostgresStore }
+  let(:filters) { { group:, event: pay_in_advance_event, grouped_by: } }
 
   let(:subscription) { create(:subscription, started_at: Time.current.beginning_of_month - 6.months) }
   let(:organization) { subscription.organization }
   let(:customer) { subscription.customer }
   let(:group) { nil }
+  let(:grouped_by) { nil }
 
   let(:billable_metric) do
     create(
@@ -53,6 +52,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
     create_list(
       :event,
       2,
+      organization_id: organization.id,
       code: billable_metric.code,
       customer:,
       subscription:,
@@ -66,6 +66,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
     create_list(
       :event,
       4,
+      organization_id: organization.id,
       code: billable_metric.code,
       customer:,
       subscription:,
@@ -150,6 +151,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
       create_list(
         :event,
         4,
+        organization_id: organization.id,
         code: billable_metric.code,
         customer:,
         subscription:,
@@ -187,6 +189,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
     before do
       create(
         :event,
+        organization_id: organization.id,
         code: billable_metric.code,
         customer:,
         subscription:,
@@ -208,6 +211,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
     before do
       create(
         :event,
+        organization_id: organization.id,
         code: billable_metric.code,
         customer:,
         subscription:,
@@ -237,6 +241,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
     let(:latest_events) do
       create(
         :event,
+        organization_id: organization.id,
         code: billable_metric.code,
         customer:,
         subscription:,
@@ -293,6 +298,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
     before do
       create(
         :event,
+        organization_id: organization.id,
         code: billable_metric.code,
         customer:,
         subscription:,
@@ -305,6 +311,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
 
       create(
         :event,
+        organization_id: organization.id,
         code: billable_metric.code,
         customer:,
         subscription:,
@@ -317,6 +324,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
 
       create(
         :event,
+        organization_id: organization.id,
         code: billable_metric.code,
         customer:,
         subscription:,
@@ -356,6 +364,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
       billable_metric.update!(recurring: true)
       create(
         :event,
+        organization_id: organization.id,
         code: billable_metric.code,
         customer:,
         subscription: old_subscription,
@@ -379,6 +388,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
     let(:pay_in_advance_event) do
       create(
         :event,
+        organization_id: organization.id,
         code: billable_metric.code,
         customer:,
         subscription:,
@@ -399,6 +409,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
       let(:latest_events) do
         create(
           :event,
+          organization_id: organization.id,
           code: billable_metric.code,
           customer:,
           subscription:,
@@ -435,6 +446,7 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
       let(:latest_events) do
         create(
           :event,
+          organization_id: organization.id,
           code: billable_metric.code,
           customer:,
           subscription:,
@@ -503,6 +515,112 @@ RSpec.describe BillableMetrics::Aggregations::SumService, type: :service, transa
       result = sum_service.per_event_aggregation
 
       expect(result.event_aggregation).to eq([12, 12, 12, 12])
+    end
+  end
+
+  describe '.grouped_by aggregation' do
+    let(:grouped_by) { ['agent_name'] }
+
+    let(:agent_names) { %w[aragorn frodo gimli legolas] }
+
+    let(:old_events) { [] }
+
+    let(:latest_events) do
+      agent_names.map do |agent_name|
+        create(
+          :event,
+          organization_id: organization.id,
+          code: billable_metric.code,
+          customer:,
+          subscription:,
+          timestamp: to_datetime - 1.day,
+          properties: {
+            total_count: 12,
+            agent_name:,
+          },
+        )
+      end
+    end
+
+    it 'returns a grouped aggregations' do
+      result = sum_service.aggregate(options:)
+
+      expect(result.aggregations.count).to eq(4)
+
+      result.aggregations.sort_by { |a| a.grouped_by['agent_name'] }.each_with_index do |aggregation, index|
+        expect(aggregation.aggregation).to eq(12)
+        expect(aggregation.count).to eq(1)
+        expect(aggregation.grouped_by['agent_name']).to eq(agent_names[index])
+      end
+    end
+
+    context 'without events' do
+      let(:latest_events) { [] }
+
+      it 'returns an empty result' do
+        result = sum_service.aggregate(options:)
+
+        expect(result.aggregations.count).to eq(1)
+
+        aggregation = result.aggregations.first
+        expect(aggregation.aggregation).to eq(0)
+        expect(aggregation.count).to eq(0)
+        expect(aggregation.grouped_by).to eq({ 'agent_name' => nil })
+      end
+    end
+
+    context 'when current usage context and charge is pay in advance' do
+      let(:options) do
+        { is_pay_in_advance: true, is_current_usage: true }
+      end
+
+      let(:cached_aggregation) do
+        create(
+          :cached_aggregation,
+          organization:,
+          charge:,
+          external_subscription_id: subscription.external_id,
+          timestamp: to_datetime - 3.days,
+          current_aggregation: '4',
+          max_aggregation: '6',
+        )
+      end
+
+      before do
+        billable_metric.update!(recurring: true)
+        cached_aggregation
+      end
+
+      it 'returns period maximum as aggregation' do
+        result = sum_service.aggregate(options:)
+
+        expect(result.aggregations.count).to eq(4)
+
+        result.aggregations.sort_by { |a| a.grouped_by['agent_name'] }.each_with_index do |aggregation, index|
+          expect(aggregation.aggregation).to eq(12)
+          expect(aggregation.count).to eq(1)
+          expect(aggregation.grouped_by['agent_name']).to eq(agent_names[index])
+        end
+      end
+
+      context 'when cached aggregation does not exist' do
+        let(:latest_events) { nil }
+        let(:cached_aggregation) { nil }
+
+        before { billable_metric.update!(recurring: false) }
+
+        it 'returns an empty result' do
+          result = sum_service.aggregate(options:)
+
+          expect(result.aggregations.count).to eq(1)
+
+          aggregation = result.aggregations.first
+          expect(aggregation.aggregation).to eq(0)
+          expect(aggregation.count).to eq(0)
+          expect(aggregation.current_usage_units).to eq(0)
+          expect(aggregation.grouped_by).to eq({ 'agent_name' => nil })
+        end
+      end
     end
   end
 end
